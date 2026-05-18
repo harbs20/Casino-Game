@@ -1,16 +1,53 @@
-# React + Vite
+# Casino Royale Frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+This is the React + Vite client for Casino Royale.
 
-Currently, two official plugins are available:
+## Tech Stack
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+- React 19
+- Vite 8
+- Tailwind CSS 4
+- ESLint
 
-## React Compiler
+## Scripts
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+```bash
+npm install
+npm run dev
+npm run build
+npm run lint
+```
 
-## Expanding the ESLint configuration
+## Source Map
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+```text
+src/
+  App.jsx          Lobby, wallet, cashier, XP, and table routing
+  Blackjack.jsx    Blackjack rules and hand rendering
+  Baccarat.jsx     Baccarat rules, multi-bet slip, and card rendering
+  Roulette.jsx     Roulette rules, multi-bet slip, and number board
+  Slots.jsx        Slot symbols, spin scoring, and reel rendering
+  ResultBurst.jsx  Shared win/loss/push result overlay
+  index.css        Global styles, table animations, card dealing, reels, wheel
+```
+
+## Game State
+
+The player profile is stored in `localStorage` under `casino-royale-profile-v1`. It tracks chips, XP, level, cash-ins, games played, best win, and total chips cashed out.
+
+The wallet API is created in `App.jsx` and passed into each game:
+
+- `wallet.chips`
+- `wallet.chargeBet(amount)`
+- `wallet.settleGame(payout, result)`
+- `wallet.setNotice(message)`
+
+## Multiple Bets
+
+Roulette and Baccarat support active bet slips. Players can add several bets before spinning or dealing, remove individual bets, clear the slip, and settle the whole slip against one result.
+
+Blackjack remains a single-hand table. Adding multiple simultaneous Blackjack bets should be treated as a larger feature because it usually requires split hands, doubled side bets, or multi-seat play.
+
+## Animation Notes
+
+Card games use keyed rounds so cards remount and replay the dealing animation each hand. `ResultBurst.jsx` renders a shared overlay for win, loss, and push states, while `index.css` controls the table glow, message pulse, and reduced-motion behavior.
