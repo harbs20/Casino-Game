@@ -1,4 +1,5 @@
 import { useState } from "react";
+import ResultBurst from "./ResultBurst";
 
 const redNumbers = new Set([1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36]);
 
@@ -11,6 +12,8 @@ const betOptions = [
   { id: "high", label: "19-36", detail: "1:1" },
   { id: "number", label: "Number", detail: "35:1" },
 ];
+
+const defaultBets = [{ id: 1, type: "red", number: null, amount: 50 }];
 
 function colorForNumber(number) {
   if (number === 0) return "green";
@@ -33,6 +36,22 @@ function isWinningBet(betType, selectedNumber, result) {
   return false;
 }
 
+function labelForBet(bet) {
+  if (bet.type === "number") return `Number ${bet.number}`;
+  return betOptions.find((option) => option.id === bet.type)?.label || bet.type;
+}
+
+function payoutForBet(bet, result) {
+  if (!isWinningBet(bet.type, bet.number, result)) return 0;
+  return bet.amount * (bet.type === "number" ? 36 : 2);
+}
+
+function resultToneFor(payout, wager) {
+  if (payout > wager) return "win";
+  if (payout === wager) return "push";
+  return "loss";
+}
+
 function numberClass(number) {
   const color = colorForNumber(number);
   if (color === "green") return "bg-emerald-500 text-emerald-950";
@@ -47,28 +66,77 @@ export default function Roulette({ wallet }) {
   const [result, setResult] = useState({ number: 0, color: "green" });
   const [spinning, setSpinning] = useState(false);
   const [message, setMessage] = useState("Choose a bet, then spin the wheel.");
+  const [spinId, setSpinId] = useState(0);
+  const [resultTone, setResultTone] = useState(null);
+  const [activeBets, setActiveBets] = useState(defaultBets);
+  const [nextBetId, setNextBetId] = useState(2);
+
+  const totalBet = activeBets.reduce((sum, activeBet) => sum + activeBet.amount, 0);
+
+  function addBet() {
+    const amount = cleanBet(bet, wallet.chips);
+    if (amount <= 0) {
+      setMessage("Choose at least 1 chip before adding a bet.");
+      return;
+    }
+
+    const nextBet = {
+      id: nextBetId,
+      type: betType,
+      number: betType === "number" ? selectedNumber : null,
+      amount,
+    };
+
+    setActiveBets((current) => [...current, nextBet]);
+    setNextBetId((current) => current + 1);
+    setMessage(`Added ${amount} chips on ${labelForBet(nextBet)}.`);
+  }
+
+  function removeBet(id) {
+    setActiveBets((current) => current.filter((activeBet) => activeBet.id !== id));
+  }
+
+  function clearBets() {
+    setActiveBets([]);
+    setMessage("Roulette bets cleared.");
+  }
 
   function spin() {
-    const wager = cleanBet(bet, wallet.chips);
-    if (!wallet.chargeBet(wager)) return;
+    const placedBets = [...activeBets];
+    const totalWager = placedBets.reduce((sum, activeBet) => sum + activeBet.amount, 0);
+    if (totalWager <= 0) {
+      setMessage("Add at least one roulette bet before spinning.");
+      return;
+    }
+    if (!wallet.chargeBet(totalWager)) return;
 
     setSpinning(true);
+    setSpinId((current) => current + 1);
+    setResultTone(null);
     setMessage("Wheel spinning...");
 
     window.setTimeout(() => {
       const number = Math.floor(Math.random() * 37);
       const nextResult = { number, color: colorForNumber(number) };
-      const won = isWinningBet(betType, selectedNumber, nextResult);
-      const payout = won ? wager * (betType === "number" ? 36 : 2) : 0;
-      const nextMessage = won
-        ? `Roulette landed ${number}. You won ${payout - wager} chips.`
-        : `Roulette landed ${number}. The table takes this one.`;
+      const settledBets = placedBets.map((activeBet) => ({
+        ...activeBet,
+        payout: payoutForBet(activeBet, nextResult),
+      }));
+      const payout = settledBets.reduce((sum, activeBet) => sum + activeBet.payout, 0);
+      const winners = settledBets.filter((activeBet) => activeBet.payout > 0);
+      const net = payout - totalWager;
+      const netText = net >= 0 ? `+${net}` : `${net}`;
+      const nextMessage =
+        winners.length > 0
+          ? `Roulette landed ${number}. ${winners.length} bet${winners.length === 1 ? "" : "s"} paid ${payout} chips (${netText} net).`
+          : `Roulette landed ${number}. All ${placedBets.length} bet${placedBets.length === 1 ? "" : "s"} missed.`;
 
       setResult(nextResult);
       setSpinning(false);
       setMessage(nextMessage);
+      setResultTone(resultToneFor(payout, totalWager));
       wallet.settleGame(payout, {
-        profit: payout - wager,
+        profit: net,
         game: "Roulette",
         message: nextMessage,
       });
@@ -79,7 +147,7 @@ export default function Roulette({ wallet }) {
     <section className="grid gap-5 lg:grid-cols-[320px_minmax(0,1fr)]">
       <div className="rounded-lg border border-white/10 bg-[#101c18] p-5 shadow-xl shadow-black/25">
         <label htmlFor="roulette-bet" className="text-sm font-bold uppercase tracking-[0.22em] text-slate-400">
-          Table Bet
+          Chip Amount
         </label>
         <input
           id="roulette-bet"
@@ -111,21 +179,74 @@ export default function Roulette({ wallet }) {
           ))}
         </div>
 
+        <div className="mt-4 grid grid-cols-[1fr_auto] gap-2">
+          <button
+            type="button"
+            onClick={addBet}
+            disabled={spinning || wallet.chips <= 0}
+            className="rounded-lg bg-yellow-300 px-4 py-3 font-black text-emerald-950 transition hover:bg-yellow-200"
+          >
+            Add Bet
+          </button>
+          <button
+            type="button"
+            onClick={clearBets}
+            disabled={spinning || activeBets.length === 0}
+            className="rounded-lg border border-white/10 px-4 py-3 font-bold text-slate-200 transition hover:border-red-300 hover:text-red-200"
+          >
+            Clear
+          </button>
+        </div>
+
+        <div className="mt-4 rounded-lg border border-white/10 bg-black/25 p-4">
+          <div className="flex items-center justify-between gap-3">
+            <div className="text-xs uppercase tracking-[0.22em] text-slate-500">Active Bets</div>
+            <div className="font-black text-white">{totalBet} chips</div>
+          </div>
+          <div className="mt-3 grid gap-2">
+            {activeBets.length === 0 ? (
+              <div className="rounded-lg border border-dashed border-white/15 px-3 py-3 text-sm text-slate-400">
+                No bets on the felt.
+              </div>
+            ) : (
+              activeBets.map((activeBet) => (
+                <div
+                  key={activeBet.id}
+                  className="grid grid-cols-[1fr_auto_auto] items-center gap-2 rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-sm"
+                >
+                  <span className="font-bold text-slate-100">{labelForBet(activeBet)}</span>
+                  <span className="text-slate-300">{activeBet.amount}</span>
+                  <button
+                    type="button"
+                    onClick={() => removeBet(activeBet.id)}
+                    disabled={spinning}
+                    className="rounded-md border border-white/10 px-2 py-1 text-xs font-bold text-slate-300 transition hover:border-red-300 hover:text-red-200"
+                    aria-label={`Remove ${labelForBet(activeBet)} bet`}
+                  >
+                    Remove
+                  </button>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+
         <button
           type="button"
           onClick={spin}
-          disabled={spinning || wallet.chips <= 0}
+          disabled={spinning || totalBet <= 0 || wallet.chips < totalBet}
           className="mt-5 w-full rounded-lg bg-gradient-to-r from-red-500 to-emerald-400 px-4 py-3 font-black text-white shadow-lg shadow-red-500/20 transition hover:brightness-110"
         >
-          Spin Wheel
+          Spin {totalBet > 0 ? `${totalBet} Chips` : "Wheel"}
         </button>
 
-        <p className="mt-4 rounded-lg border border-red-300/20 bg-red-950/20 p-4 text-sm leading-6 text-red-100">
+        <p className={`result-message mt-4 rounded-lg border border-red-300/20 bg-red-950/20 p-4 text-sm leading-6 text-red-100 ${resultTone ? `is-${resultTone}` : ""}`}>
           {message}
         </p>
       </div>
 
-      <div className="rounded-lg border border-emerald-300/20 bg-[linear-gradient(135deg,#10241d,#080b0b)] p-5 shadow-2xl shadow-black/30">
+      <div className={`result-stage rounded-lg border border-emerald-300/20 bg-[linear-gradient(135deg,#10241d,#080b0b)] p-5 shadow-2xl shadow-black/30 ${resultTone ? `is-${resultTone}` : ""}`}>
+        <ResultBurst tone={resultTone} resultKey={spinId} />
         <div className="grid gap-5 xl:grid-cols-[240px_minmax(0,1fr)]">
           <div className="flex flex-col items-center justify-center">
             <div

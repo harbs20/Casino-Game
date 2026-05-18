@@ -1,4 +1,5 @@
 import { useState } from "react";
+import ResultBurst from "./ResultBurst";
 
 const suits = ["♠", "♥", "♦", "♣"];
 const ranks = [
@@ -23,6 +24,8 @@ const wagerOptions = [
   { id: "tie", label: "Tie", detail: "8:1" },
 ];
 
+const defaultBets = [{ id: 1, type: "banker", amount: 50 }];
+
 function createDeck() {
   return suits.flatMap((suit) => ranks.map((rank) => ({ ...rank, suit })));
 }
@@ -46,16 +49,70 @@ function cleanBet(value, max) {
   return Math.max(0, Math.min(Math.floor(amount), max));
 }
 
+function resultToneFor(payout, wager) {
+  if (payout > wager) return "win";
+  if (payout === wager) return "push";
+  return "loss";
+}
+
+function payoutForBet(bet, winner) {
+  if (winner === "tie" && bet.type !== "tie") return bet.amount;
+  if (winner === bet.type && winner === "player") return bet.amount * 2;
+  if (winner === bet.type && winner === "banker") return Math.floor(bet.amount * 1.95);
+  if (winner === bet.type && winner === "tie") return bet.amount * 9;
+  return 0;
+}
+
+function outcomeForBet(bet, winner) {
+  if (winner === "tie" && bet.type !== "tie") return "push";
+  if (winner === bet.type) return "win";
+  return "loss";
+}
+
 export default function Baccarat({ wallet }) {
   const [bet, setBet] = useState(50);
   const [wagerOn, setWagerOn] = useState("banker");
   const [playerHand, setPlayerHand] = useState([]);
   const [bankerHand, setBankerHand] = useState([]);
   const [message, setMessage] = useState("Back player, banker, or tie. Closest to 9 wins.");
+  const [roundId, setRoundId] = useState(0);
+  const [resultTone, setResultTone] = useState(null);
+  const [winner, setWinner] = useState(null);
+  const [activeBets, setActiveBets] = useState(defaultBets);
+  const [nextBetId, setNextBetId] = useState(2);
+
+  const totalBet = activeBets.reduce((sum, activeBet) => sum + activeBet.amount, 0);
+
+  function addBet() {
+    const amount = cleanBet(bet, wallet.chips);
+    if (amount <= 0) {
+      setMessage("Choose at least 1 chip before adding a baccarat bet.");
+      return;
+    }
+
+    const nextBet = { id: nextBetId, type: wagerOn, amount };
+    setActiveBets((current) => [...current, nextBet]);
+    setNextBetId((current) => current + 1);
+    setMessage(`Added ${amount} chips on ${winnerLabel(wagerOn)}.`);
+  }
+
+  function removeBet(id) {
+    setActiveBets((current) => current.filter((activeBet) => activeBet.id !== id));
+  }
+
+  function clearBets() {
+    setActiveBets([]);
+    setMessage("Baccarat bets cleared.");
+  }
 
   function deal() {
-    const wager = cleanBet(bet, wallet.chips);
-    if (!wallet.chargeBet(wager)) return;
+    const placedBets = [...activeBets];
+    const totalWager = placedBets.reduce((sum, activeBet) => sum + activeBet.amount, 0);
+    if (totalWager <= 0) {
+      setMessage("Add at least one baccarat bet before dealing.");
+      return;
+    }
+    if (!wallet.chargeBet(totalWager)) return;
 
     const shoe = shuffle(createDeck());
     const nextPlayer = [shoe.pop(), shoe.pop()];
@@ -70,22 +127,29 @@ export default function Baccarat({ wallet }) {
     if (playerScore > bankerScore) winner = "player";
     if (bankerScore > playerScore) winner = "banker";
 
-    let payout = 0;
-    if (winner === "tie" && wagerOn !== "tie") payout = wager;
-    if (winner === wagerOn && winner === "player") payout = wager * 2;
-    if (winner === wagerOn && winner === "banker") payout = Math.floor(wager * 1.95);
-    if (winner === wagerOn && winner === "tie") payout = wager * 9;
-
+    const settledBets = placedBets.map((activeBet) => ({
+      ...activeBet,
+      outcome: outcomeForBet(activeBet, winner),
+      payout: payoutForBet(activeBet, winner),
+    }));
+    const payout = settledBets.reduce((sum, activeBet) => sum + activeBet.payout, 0);
+    const wins = settledBets.filter((activeBet) => activeBet.outcome === "win");
+    const pushes = settledBets.filter((activeBet) => activeBet.outcome === "push");
+    const net = payout - totalWager;
+    const netText = net >= 0 ? `+${net}` : `${net}`;
     const nextMessage =
-      payout > 0
-        ? `${winnerLabel(winner)} wins. Baccarat paid ${payout} chips.`
-        : `${winnerLabel(winner)} wins. Your ${winnerLabel(wagerOn).toLowerCase()} bet missed.`;
+      wins.length > 0 || pushes.length > 0
+        ? `${winnerLabel(winner)} wins. ${wins.length} win${wins.length === 1 ? "" : "s"}, ${pushes.length} push${pushes.length === 1 ? "" : "es"}; paid ${payout} chips (${netText} net).`
+        : `${winnerLabel(winner)} wins. All ${placedBets.length} bet${placedBets.length === 1 ? "" : "s"} missed.`;
 
     setPlayerHand(nextPlayer);
     setBankerHand(nextBanker);
     setMessage(nextMessage);
+    setRoundId((current) => current + 1);
+    setResultTone(resultToneFor(payout, totalWager));
+    setWinner(winner);
     wallet.settleGame(payout, {
-      profit: payout - wager,
+      profit: net,
       game: "Baccarat",
       message: nextMessage,
     });
@@ -95,7 +159,7 @@ export default function Baccarat({ wallet }) {
     <section className="grid gap-5 lg:grid-cols-[320px_minmax(0,1fr)]">
       <div className="rounded-lg border border-white/10 bg-[#101c18] p-5 shadow-xl shadow-black/25">
         <label htmlFor="baccarat-bet" className="text-sm font-bold uppercase tracking-[0.22em] text-slate-400">
-          Baccarat Bet
+          Chip Amount
         </label>
         <input
           id="baccarat-bet"
@@ -125,24 +189,90 @@ export default function Baccarat({ wallet }) {
           ))}
         </div>
 
+        <div className="mt-4 grid grid-cols-[1fr_auto] gap-2">
+          <button
+            type="button"
+            onClick={addBet}
+            disabled={wallet.chips <= 0}
+            className="rounded-lg bg-cyan-300 px-4 py-3 font-black text-slate-950 transition hover:bg-cyan-200"
+          >
+            Add Bet
+          </button>
+          <button
+            type="button"
+            onClick={clearBets}
+            disabled={activeBets.length === 0}
+            className="rounded-lg border border-white/10 px-4 py-3 font-bold text-slate-200 transition hover:border-red-300 hover:text-red-200"
+          >
+            Clear
+          </button>
+        </div>
+
+        <div className="mt-4 rounded-lg border border-white/10 bg-black/25 p-4">
+          <div className="flex items-center justify-between gap-3">
+            <div className="text-xs uppercase tracking-[0.22em] text-slate-500">Active Bets</div>
+            <div className="font-black text-white">{totalBet} chips</div>
+          </div>
+          <div className="mt-3 grid gap-2">
+            {activeBets.length === 0 ? (
+              <div className="rounded-lg border border-dashed border-white/15 px-3 py-3 text-sm text-slate-400">
+                No baccarat bets placed.
+              </div>
+            ) : (
+              activeBets.map((activeBet) => (
+                <div
+                  key={activeBet.id}
+                  className="grid grid-cols-[1fr_auto_auto] items-center gap-2 rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-sm"
+                >
+                  <span className="font-bold text-slate-100">{winnerLabel(activeBet.type)}</span>
+                  <span className="text-slate-300">{activeBet.amount}</span>
+                  <button
+                    type="button"
+                    onClick={() => removeBet(activeBet.id)}
+                    className="rounded-md border border-white/10 px-2 py-1 text-xs font-bold text-slate-300 transition hover:border-red-300 hover:text-red-200"
+                    aria-label={`Remove ${winnerLabel(activeBet.type)} bet`}
+                  >
+                    Remove
+                  </button>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+
         <button
           type="button"
           onClick={deal}
-          disabled={wallet.chips <= 0}
+          disabled={totalBet <= 0 || wallet.chips < totalBet}
           className="mt-5 w-full rounded-lg bg-gradient-to-r from-sky-300 to-cyan-500 px-4 py-3 font-black text-slate-950 shadow-lg shadow-cyan-500/20 transition hover:brightness-110"
         >
-          Deal Baccarat
+          Deal {totalBet > 0 ? `${totalBet} Chips` : "Baccarat"}
         </button>
 
-        <p className="mt-4 rounded-lg border border-cyan-300/20 bg-cyan-950/25 p-4 text-sm leading-6 text-cyan-100">
+        <p className={`result-message mt-4 rounded-lg border border-cyan-300/20 bg-cyan-950/25 p-4 text-sm leading-6 text-cyan-100 ${resultTone ? `is-${resultTone}` : ""}`}>
           {message}
         </p>
       </div>
 
-      <div className="rounded-lg border border-cyan-300/20 bg-[linear-gradient(135deg,#0f2f3b,#071419)] p-5 shadow-2xl shadow-black/30">
-        <BaccaratHand label="Player" hand={playerHand} score={handValue(playerHand)} />
+      <div className={`result-stage rounded-lg border border-cyan-300/20 bg-[linear-gradient(135deg,#0f2f3b,#071419)] p-5 shadow-2xl shadow-black/30 ${resultTone ? `is-${resultTone}` : ""}`}>
+        <ResultBurst tone={resultTone} resultKey={roundId} delay="720ms" />
+        <BaccaratHand
+          label="Player"
+          hand={playerHand}
+          score={handValue(playerHand)}
+          roundId={roundId}
+          dealOffset={0}
+          isWinningHand={winner === "player" || winner === "tie"}
+        />
         <div className="my-6 h-px bg-white/10" />
-        <BaccaratHand label="Banker" hand={bankerHand} score={handValue(bankerHand)} />
+        <BaccaratHand
+          label="Banker"
+          hand={bankerHand}
+          score={handValue(bankerHand)}
+          roundId={roundId}
+          dealOffset={1}
+          isWinningHand={winner === "banker" || winner === "tie"}
+        />
       </div>
     </section>
   );
@@ -154,9 +284,9 @@ function winnerLabel(winner) {
   return "Tie";
 }
 
-function BaccaratHand({ label, hand, score }) {
+function BaccaratHand({ label, hand, score, roundId, dealOffset = 0, isWinningHand = false }) {
   return (
-    <div>
+    <div className={`hand-row ${isWinningHand ? "is-winning" : ""}`}>
       <div className="mb-3 flex items-center justify-between">
         <h2 className="text-lg font-black uppercase tracking-[0.22em] text-slate-200">{label}</h2>
         <span className="rounded-full border border-white/10 px-4 py-1 text-sm font-black text-cyan-200">
@@ -169,17 +299,26 @@ function BaccaratHand({ label, hand, score }) {
             Waiting for deal
           </div>
         ) : (
-          hand.map((card, index) => <BaccaratCard key={`${card.rank}${card.suit}${index}`} card={card} />)
+          hand.map((card, index) => (
+            <BaccaratCard
+              key={`${roundId}-${card.rank}${card.suit}${index}`}
+              card={card}
+              dealIndex={dealOffset + index * 2}
+            />
+          ))
         )}
       </div>
     </div>
   );
 }
 
-function BaccaratCard({ card }) {
+function BaccaratCard({ card, dealIndex }) {
   const isRed = card.suit === "♥" || card.suit === "♦";
   return (
-    <div className="playing-card flex h-28 w-20 flex-col justify-between rounded-lg border-2 border-cyan-200 bg-white p-2 font-black text-slate-950 shadow-xl">
+    <div
+      className="playing-card card-face flex h-28 w-20 flex-col justify-between rounded-lg border-2 border-cyan-200 bg-white p-2 font-black text-slate-950 shadow-xl"
+      style={{ "--deal-delay": `${dealIndex * 90}ms` }}
+    >
       <div className={isRed ? "text-red-500" : "text-slate-950"}>{card.rank}</div>
       <div className={`self-center text-4xl ${isRed ? "text-red-500" : "text-slate-950"}`}>{card.suit}</div>
       <div className={`self-end ${isRed ? "text-red-500" : "text-slate-950"}`}>{card.rank}</div>
