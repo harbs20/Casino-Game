@@ -1,4 +1,5 @@
 import { useState } from "react";
+import ResultBurst from "./ResultBurst";
 
 const suits = ["♠", "♥", "♦", "♣"];
 const ranks = [
@@ -50,6 +51,12 @@ function cleanBet(value, max) {
   return Math.max(0, Math.min(Math.floor(amount), max));
 }
 
+function resultToneFor(payout, wager) {
+  if (payout > wager) return "win";
+  if (payout === wager) return "push";
+  return "loss";
+}
+
 export default function Blackjack({ wallet }) {
   const [bet, setBet] = useState(100);
   const [roundBet, setRoundBet] = useState(0);
@@ -58,6 +65,8 @@ export default function Blackjack({ wallet }) {
   const [dealer, setDealer] = useState([]);
   const [phase, setPhase] = useState("betting");
   const [message, setMessage] = useState("Set a bet and deal into the shoe.");
+  const [roundId, setRoundId] = useState(0);
+  const [resultTone, setResultTone] = useState(null);
 
   const canAct = phase === "playing";
   const playerScore = handValue(player);
@@ -74,6 +83,7 @@ export default function Blackjack({ wallet }) {
     setDealer(nextDealer);
     setMessage(nextMessage);
     setPhase("roundover");
+    setResultTone(resultToneFor(payout, wager));
   }
 
   function resolveDealer(nextDeck, nextPlayer, nextDealer, wager) {
@@ -109,6 +119,8 @@ export default function Blackjack({ wallet }) {
     const playerBlackjack = isNatural(nextPlayer);
     const dealerBlackjack = isNatural(nextDealer);
 
+    setRoundId((current) => current + 1);
+    setResultTone(null);
     setRoundBet(wager);
     setDeck(shoe);
     setPlayer(nextPlayer);
@@ -214,22 +226,25 @@ export default function Blackjack({ wallet }) {
           <div className="mt-1 text-2xl font-black text-white">{roundBet} chips</div>
         </div>
 
-        <p className="mt-4 rounded-lg border border-emerald-300/20 bg-emerald-950/30 p-4 text-sm leading-6 text-emerald-100">
+        <p className={`result-message mt-4 rounded-lg border border-emerald-300/20 bg-emerald-950/30 p-4 text-sm leading-6 text-emerald-100 ${resultTone ? `is-${resultTone}` : ""}`}>
           {message}
         </p>
       </div>
 
-      <div className="rounded-lg border border-emerald-300/20 bg-[linear-gradient(135deg,#0c3b2e,#071b16)] p-5 shadow-2xl shadow-black/30">
+      <div className={`result-stage rounded-lg border border-emerald-300/20 bg-[linear-gradient(135deg,#0c3b2e,#071b16)] p-5 shadow-2xl shadow-black/30 ${resultTone ? `is-${resultTone}` : ""}`}>
+        <ResultBurst tone={resultTone} resultKey={roundId} delay="620ms" />
         <TableRow
           label="Dealer"
           score={phase === "playing" ? "?" : dealerScore}
           cards={dealer}
           hideSecond={phase === "playing"}
+          roundId={roundId}
+          dealOffset={1}
         />
 
         <div className="my-6 h-px bg-white/10" />
 
-        <TableRow label="You" score={playerScore} cards={player} />
+        <TableRow label="You" score={playerScore} cards={player} roundId={roundId} dealOffset={0} />
 
         <div className="mt-8 flex flex-wrap justify-center gap-3">
           <button
@@ -262,7 +277,7 @@ export default function Blackjack({ wallet }) {
   );
 }
 
-function TableRow({ label, score, cards, hideSecond = false }) {
+function TableRow({ label, score, cards, hideSecond = false, roundId, dealOffset = 0 }) {
   return (
     <div>
       <div className="mb-3 flex items-center justify-between">
@@ -277,19 +292,32 @@ function TableRow({ label, score, cards, hideSecond = false }) {
             Waiting for deal
           </div>
         ) : (
-          cards.map((card, index) => (
-            <PlayingCard key={`${card.rank}${card.suit}${index}`} card={card} hidden={hideSecond && index === 1} />
-          ))
+          cards.map((card, index) => {
+            const hidden = hideSecond && index === 1;
+            return (
+              <PlayingCard
+                key={`${roundId}-${card.rank}${card.suit}${index}-${hidden ? "back" : "face"}`}
+                card={card}
+                hidden={hidden}
+                dealIndex={dealOffset + index * 2}
+              />
+            );
+          })
         )}
       </div>
     </div>
   );
 }
 
-function PlayingCard({ card, hidden }) {
+function PlayingCard({ card, hidden, dealIndex }) {
+  const animationStyle = { "--deal-delay": `${dealIndex * 90}ms` };
+
   if (hidden) {
     return (
-      <div className="playing-card grid h-28 w-20 place-items-center rounded-lg border-2 border-slate-200 bg-[#111827] shadow-xl">
+      <div
+        className="playing-card card-back grid h-28 w-20 place-items-center rounded-lg border-2 border-slate-200 bg-[#111827] shadow-xl"
+        style={animationStyle}
+      >
         <div className="grid h-12 w-12 place-items-center rounded-full border border-white/40 text-2xl text-slate-200">
           ♠
         </div>
@@ -299,7 +327,10 @@ function PlayingCard({ card, hidden }) {
 
   const isRed = card.suit === "♥" || card.suit === "♦";
   return (
-    <div className="playing-card flex h-28 w-20 flex-col justify-between rounded-lg border-2 border-yellow-300 bg-white p-2 font-black text-slate-950 shadow-xl">
+    <div
+      className="playing-card card-face flex h-28 w-20 flex-col justify-between rounded-lg border-2 border-yellow-300 bg-white p-2 font-black text-slate-950 shadow-xl"
+      style={animationStyle}
+    >
       <div className={isRed ? "text-red-500" : "text-slate-950"}>{card.rank}</div>
       <div className={`self-center text-4xl ${isRed ? "text-red-500" : "text-slate-950"}`}>{card.suit}</div>
       <div className={`self-end ${isRed ? "text-red-500" : "text-slate-950"}`}>{card.rank}</div>

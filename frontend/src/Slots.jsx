@@ -1,4 +1,5 @@
 import { useState } from "react";
+import ResultBurst from "./ResultBurst";
 
 const symbols = [
   { id: "seven", icon: "7", label: "Lucky Seven", multiplier: 20 },
@@ -52,12 +53,16 @@ export default function Slots({ wallet }) {
   const [grid, setGrid] = useState(makeGrid);
   const [spinning, setSpinning] = useState(false);
   const [message, setMessage] = useState("Match any row or diagonal to win.");
+  const [spinId, setSpinId] = useState(0);
+  const [resultTone, setResultTone] = useState(null);
 
   function spin() {
     const wager = cleanBet(bet, wallet.chips);
     if (!wallet.chargeBet(wager)) return;
 
     setSpinning(true);
+    setSpinId((current) => current + 1);
+    setResultTone(null);
     setMessage("Reels spinning...");
 
     window.setTimeout(() => {
@@ -71,6 +76,7 @@ export default function Slots({ wallet }) {
       setGrid(nextGrid);
       setSpinning(false);
       setMessage(nextMessage);
+      setResultTone(result.payout > wager ? "win" : "loss");
       wallet.settleGame(result.payout, {
         profit: result.payout - wager,
         game: "Slots",
@@ -116,12 +122,13 @@ export default function Slots({ wallet }) {
         >
           Spin Reels
         </button>
-        <p className="mt-4 rounded-lg border border-fuchsia-300/20 bg-fuchsia-950/25 p-4 text-sm leading-6 text-fuchsia-100">
+        <p className={`result-message mt-4 rounded-lg border border-fuchsia-300/20 bg-fuchsia-950/25 p-4 text-sm leading-6 text-fuchsia-100 ${resultTone ? `is-${resultTone}` : ""}`}>
           {message}
         </p>
       </div>
 
-      <div className="rounded-lg border border-fuchsia-300/20 bg-[linear-gradient(135deg,#231034,#120816)] p-5 shadow-2xl shadow-black/30">
+      <div className={`result-stage rounded-lg border border-fuchsia-300/20 bg-[linear-gradient(135deg,#231034,#120816)] p-5 shadow-2xl shadow-black/30 ${resultTone ? `is-${resultTone}` : ""}`}>
+        <ResultBurst tone={resultTone} resultKey={spinId} />
         <div className="mx-auto grid max-w-xl grid-cols-3 gap-3">
           {grid.map((symbol, index) => (
             <div
