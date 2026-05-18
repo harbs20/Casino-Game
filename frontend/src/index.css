@@ -46,8 +46,121 @@ input:disabled {
 }
 
 .playing-card {
-  animation: deal-in 180ms ease-out both;
-  transform-origin: center bottom;
+  animation: deal-card 520ms cubic-bezier(0.17, 0.84, 0.44, 1) both;
+  animation-delay: var(--deal-delay, 0ms);
+  backface-visibility: hidden;
+  transform-origin: center center;
+  will-change: opacity, transform, filter;
+}
+
+.card-back {
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.08), transparent 44%),
+    repeating-linear-gradient(45deg, #111827 0 8px, #172033 8px 16px);
+}
+
+.result-stage {
+  isolation: isolate;
+  overflow: hidden;
+  position: relative;
+}
+
+.result-stage > * {
+  position: relative;
+  z-index: 1;
+}
+
+.result-stage::before {
+  content: "";
+  inset: 0;
+  opacity: 0;
+  pointer-events: none;
+  position: absolute;
+  z-index: 0;
+}
+
+.result-stage.is-win {
+  animation: table-win 900ms ease-out both;
+}
+
+.result-stage.is-loss {
+  animation: table-loss 720ms ease-out both;
+}
+
+.result-stage.is-push {
+  animation: table-push 780ms ease-out both;
+}
+
+.result-stage.is-win::before {
+  animation: result-glow 1200ms ease-out both;
+  background: radial-gradient(circle at center, rgba(74, 222, 128, 0.34), transparent 58%);
+}
+
+.result-stage.is-loss::before {
+  animation: result-glow 1000ms ease-out both;
+  background: radial-gradient(circle at center, rgba(248, 113, 113, 0.28), transparent 60%);
+}
+
+.result-stage.is-push::before {
+  animation: result-glow 1000ms ease-out both;
+  background: radial-gradient(circle at center, rgba(250, 204, 21, 0.28), transparent 60%);
+}
+
+.result-burst {
+  border-radius: 999px;
+  font-size: clamp(1.75rem, 8vw, 4.5rem);
+  font-weight: 950;
+  inset: 50% auto auto 50%;
+  letter-spacing: 0;
+  line-height: 1;
+  padding: 0.22em 0.42em;
+  pointer-events: none;
+  position: absolute;
+  text-transform: uppercase;
+  transform: translate(-50%, -50%) scale(0.72);
+  white-space: nowrap;
+  z-index: 4;
+}
+
+.result-burst-win {
+  animation: result-burst 1250ms var(--result-delay, 360ms) ease-out both;
+  background: rgba(16, 185, 129, 0.18);
+  box-shadow: 0 0 44px rgba(52, 211, 153, 0.42);
+  color: #bbf7d0;
+  text-shadow: 0 2px 18px rgba(6, 78, 59, 0.8);
+}
+
+.result-burst-loss {
+  animation: result-burst 1050ms var(--result-delay, 280ms) ease-out both;
+  background: rgba(239, 68, 68, 0.16);
+  box-shadow: 0 0 34px rgba(248, 113, 113, 0.32);
+  color: #fecaca;
+  text-shadow: 0 2px 18px rgba(127, 29, 29, 0.9);
+}
+
+.result-burst-push {
+  animation: result-burst 1050ms var(--result-delay, 300ms) ease-out both;
+  background: rgba(250, 204, 21, 0.16);
+  box-shadow: 0 0 34px rgba(250, 204, 21, 0.32);
+  color: #fef3c7;
+  text-shadow: 0 2px 18px rgba(113, 63, 18, 0.9);
+}
+
+.result-message.is-win {
+  animation: message-win 800ms ease-out both;
+}
+
+.result-message.is-loss {
+  animation: message-loss 700ms ease-out both;
+}
+
+.result-message.is-push {
+  animation: message-push 700ms ease-out both;
+}
+
+.hand-row.is-winning h2,
+.hand-row.is-winning span {
+  animation: winning-hand 900ms 420ms ease-out both;
 }
 
 .slot-reel.spinning {
@@ -101,15 +214,153 @@ input:disabled {
   animation: roulette-spin 900ms cubic-bezier(0.16, 0.84, 0.44, 1) both;
 }
 
-@keyframes deal-in {
+@keyframes deal-card {
   from {
     opacity: 0;
-    transform: translateY(10px) rotateX(18deg) scale(0.96);
+    filter: blur(2px) brightness(1.25);
+    transform: translate3d(92px, -58px, 0) rotateZ(14deg) rotateY(-58deg) scale(0.78);
+  }
+
+  62% {
+    opacity: 1;
+    filter: blur(0) brightness(1.08);
+    transform: translate3d(-5px, 3px, 0) rotateZ(-3deg) rotateY(8deg) scale(1.04);
   }
 
   to {
     opacity: 1;
-    transform: translateY(0) rotateX(0deg) scale(1);
+    filter: blur(0) brightness(1);
+    transform: translate3d(0, 0, 0) rotateZ(0deg) rotateY(0deg) scale(1);
+  }
+}
+
+@keyframes result-burst {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.72);
+  }
+
+  18% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1.08);
+  }
+
+  64% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -56%) scale(1.18);
+  }
+}
+
+@keyframes result-glow {
+  0%,
+  100% {
+    opacity: 0;
+  }
+
+  24%,
+  70% {
+    opacity: 1;
+  }
+}
+
+@keyframes table-win {
+  0%,
+  100% {
+    box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.3);
+    transform: translateY(0);
+  }
+
+  35% {
+    box-shadow: 0 0 0 1px rgba(74, 222, 128, 0.5), 0 0 42px rgba(74, 222, 128, 0.22);
+    transform: translateY(-2px);
+  }
+}
+
+@keyframes table-loss {
+  0%,
+  100% {
+    box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.3);
+    transform: translateX(0);
+  }
+
+  20% {
+    transform: translateX(-3px);
+  }
+
+  40% {
+    box-shadow: 0 0 0 1px rgba(248, 113, 113, 0.42), 0 0 32px rgba(248, 113, 113, 0.2);
+    transform: translateX(3px);
+  }
+
+  60% {
+    transform: translateX(-2px);
+  }
+}
+
+@keyframes table-push {
+  0%,
+  100% {
+    box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.3);
+    transform: scale(1);
+  }
+
+  42% {
+    box-shadow: 0 0 0 1px rgba(250, 204, 21, 0.42), 0 0 32px rgba(250, 204, 21, 0.18);
+    transform: scale(1.01);
+  }
+}
+
+@keyframes message-win {
+  0%,
+  100% {
+    border-color: rgba(110, 231, 183, 0.2);
+  }
+
+  45% {
+    border-color: rgba(110, 231, 183, 0.85);
+    box-shadow: 0 0 26px rgba(16, 185, 129, 0.18);
+  }
+}
+
+@keyframes message-loss {
+  0%,
+  100% {
+    border-color: rgba(248, 113, 113, 0.2);
+  }
+
+  45% {
+    border-color: rgba(248, 113, 113, 0.75);
+    box-shadow: 0 0 22px rgba(239, 68, 68, 0.16);
+  }
+}
+
+@keyframes message-push {
+  0%,
+  100% {
+    border-color: rgba(250, 204, 21, 0.2);
+  }
+
+  45% {
+    border-color: rgba(250, 204, 21, 0.72);
+    box-shadow: 0 0 22px rgba(250, 204, 21, 0.14);
+  }
+}
+
+@keyframes winning-hand {
+  0%,
+  100% {
+    filter: brightness(1);
+    transform: translateY(0);
+  }
+
+  45% {
+    filter: brightness(1.4);
+    transform: translateY(-1px);
   }
 }
 
@@ -133,5 +384,21 @@ input:disabled {
 
   to {
     transform: rotate(1080deg) scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .playing-card,
+  .slot-reel.spinning,
+  .roulette-wheel.is-spinning,
+  .result-stage,
+  .result-stage::before,
+  .result-burst,
+  .result-message,
+  .hand-row.is-winning h2,
+  .hand-row.is-winning span {
+    animation-duration: 1ms;
+    animation-delay: 0ms;
+    transition-duration: 1ms;
   }
 }
