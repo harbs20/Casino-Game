@@ -10,6 +10,12 @@ const betOptions = [
   { id: "odd", label: "Odd", detail: "1:1" },
   { id: "low", label: "1-18", detail: "1:1" },
   { id: "high", label: "19-36", detail: "1:1" },
+  { id: "dozen1", label: "1st 12", detail: "2:1" },
+  { id: "dozen2", label: "2nd 12", detail: "2:1" },
+  { id: "dozen3", label: "3rd 12", detail: "2:1" },
+  { id: "column1", label: "Column 1", detail: "2:1" },
+  { id: "column2", label: "Column 2", detail: "2:1" },
+  { id: "column3", label: "Column 3", detail: "2:1" },
   { id: "number", label: "Number", detail: "35:1" },
 ];
 
@@ -33,6 +39,12 @@ function isWinningBet(betType, selectedNumber, result) {
   if (betType === "odd") return result.number % 2 === 1;
   if (betType === "low") return result.number >= 1 && result.number <= 18;
   if (betType === "high") return result.number >= 19 && result.number <= 36;
+  if (betType === "dozen1") return result.number >= 1 && result.number <= 12;
+  if (betType === "dozen2") return result.number >= 13 && result.number <= 24;
+  if (betType === "dozen3") return result.number >= 25 && result.number <= 36;
+  if (betType === "column1") return result.number !== 0 && result.number % 3 === 1;
+  if (betType === "column2") return result.number !== 0 && result.number % 3 === 2;
+  if (betType === "column3") return result.number !== 0 && result.number % 3 === 0;
   return false;
 }
 
@@ -43,7 +55,10 @@ function labelForBet(bet) {
 
 function payoutForBet(bet, result) {
   if (!isWinningBet(bet.type, bet.number, result)) return 0;
-  return bet.amount * (bet.type === "number" ? 36 : 2);
+  const threeToOne = bet.type.startsWith("dozen") || bet.type.startsWith("column");
+  if (bet.type === "number") return bet.amount * 36;
+  if (threeToOne) return bet.amount * 3;
+  return bet.amount * 2;
 }
 
 function resultToneFor(payout, wager) {
@@ -108,7 +123,7 @@ export default function Roulette({ wallet }) {
       setMessage("Add at least one roulette bet before spinning.");
       return;
     }
-    if (!wallet.chargeBet(totalWager)) return;
+    if (!wallet.chargeBet(totalWager, { game: "Roulette" })) return;
 
     setSpinning(true);
     setSpinId((current) => current + 1);
@@ -137,6 +152,7 @@ export default function Roulette({ wallet }) {
       setResultTone(resultToneFor(payout, totalWager));
       wallet.settleGame(payout, {
         profit: net,
+        wager: totalWager,
         game: "Roulette",
         message: nextMessage,
       });

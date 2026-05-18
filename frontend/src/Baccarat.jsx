@@ -22,6 +22,8 @@ const wagerOptions = [
   { id: "player", label: "Player", detail: "1:1" },
   { id: "banker", label: "Banker", detail: "0.95:1" },
   { id: "tie", label: "Tie", detail: "8:1" },
+  { id: "playerPair", label: "Player Pair", detail: "11:1" },
+  { id: "bankerPair", label: "Banker Pair", detail: "11:1" },
 ];
 
 const defaultBets = [{ id: 1, type: "banker", amount: 50 }];
@@ -55,7 +57,13 @@ function resultToneFor(payout, wager) {
   return "loss";
 }
 
-function payoutForBet(bet, winner) {
+function isPair(hand) {
+  return hand.length >= 2 && hand[0].rank === hand[1].rank;
+}
+
+function payoutForBet(bet, winner, playerHand, bankerHand) {
+  if (bet.type === "playerPair") return isPair(playerHand) ? bet.amount * 12 : 0;
+  if (bet.type === "bankerPair") return isPair(bankerHand) ? bet.amount * 12 : 0;
   if (winner === "tie" && bet.type !== "tie") return bet.amount;
   if (winner === bet.type && winner === "player") return bet.amount * 2;
   if (winner === bet.type && winner === "banker") return Math.floor(bet.amount * 1.95);
@@ -63,7 +71,9 @@ function payoutForBet(bet, winner) {
   return 0;
 }
 
-function outcomeForBet(bet, winner) {
+function outcomeForBet(bet, winner, playerHand, bankerHand) {
+  if (bet.type === "playerPair") return isPair(playerHand) ? "win" : "loss";
+  if (bet.type === "bankerPair") return isPair(bankerHand) ? "win" : "loss";
   if (winner === "tie" && bet.type !== "tie") return "push";
   if (winner === bet.type) return "win";
   return "loss";
@@ -112,7 +122,7 @@ export default function Baccarat({ wallet }) {
       setMessage("Add at least one baccarat bet before dealing.");
       return;
     }
-    if (!wallet.chargeBet(totalWager)) return;
+    if (!wallet.chargeBet(totalWager, { game: "Baccarat" })) return;
 
     const shoe = shuffle(createDeck());
     const nextPlayer = [shoe.pop(), shoe.pop()];
@@ -129,8 +139,8 @@ export default function Baccarat({ wallet }) {
 
     const settledBets = placedBets.map((activeBet) => ({
       ...activeBet,
-      outcome: outcomeForBet(activeBet, winner),
-      payout: payoutForBet(activeBet, winner),
+      outcome: outcomeForBet(activeBet, winner, nextPlayer, nextBanker),
+      payout: payoutForBet(activeBet, winner, nextPlayer, nextBanker),
     }));
     const payout = settledBets.reduce((sum, activeBet) => sum + activeBet.payout, 0);
     const wins = settledBets.filter((activeBet) => activeBet.outcome === "win");
@@ -150,6 +160,7 @@ export default function Baccarat({ wallet }) {
     setWinner(winner);
     wallet.settleGame(payout, {
       profit: net,
+      wager: totalWager,
       game: "Baccarat",
       message: nextMessage,
     });
@@ -281,6 +292,8 @@ export default function Baccarat({ wallet }) {
 function winnerLabel(winner) {
   if (winner === "player") return "Player";
   if (winner === "banker") return "Banker";
+  if (winner === "playerPair") return "Player Pair";
+  if (winner === "bankerPair") return "Banker Pair";
   return "Tie";
 }
 

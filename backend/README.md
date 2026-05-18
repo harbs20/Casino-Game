@@ -1,10 +1,29 @@
 # Casino Royale Backend
 
-The backend is currently a placeholder. The app works as a frontend-only prototype, with game logic and profile persistence handled in the browser.
+The backend is an optional local ledger server. The app still works as a frontend-only prototype, but when the frontend's `Ledger Sync` toggle is enabled, new ledger events are posted here.
+
+## Run It
+
+```bash
+npm run dev
+```
+
+The server listens at `http://127.0.0.1:8787/`.
+
+## Current Endpoints
+
+```text
+GET    /health
+GET    /ledger
+POST   /ledger
+DELETE /ledger
+```
+
+Ledger data is stored in `backend/data/ledger.json`, which is created automatically.
 
 ## What Belongs In The Backend?
 
-Use the backend for anything that must be trusted, shared across devices, or audited:
+As the app grows, use the backend for anything that must be trusted, shared across devices, or audited:
 
 - User accounts and authentication.
 - Persistent player profiles and saved wallet balances.
@@ -51,9 +70,9 @@ The frontend should own:
 
 ## Good First Backend Milestone
 
-Start with profile persistence and wallet history:
+The first milestone is now started: a local ledger server exists. The next milestone should add profile persistence:
 
-1. Add a small Node/Express or Fastify API.
-2. Store player profiles and ledger entries in SQLite.
-3. Replace `localStorage` profile loading with API calls.
-4. Keep the current frontend game rules until server-authoritative game rounds are ready.
+1. Store player profiles and ledger entries in SQLite.
+2. Replace `localStorage` profile loading with API calls.
+3. Keep the current frontend game rules until server-authoritative game rounds are ready.
+4. Move random outcomes and chip settlement to the server when trust matters.

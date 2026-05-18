@@ -45,6 +45,49 @@ input:disabled {
   min-height: 100svh;
 }
 
+.theme-gold .playing-card.card-face {
+  border-color: #facc15;
+  box-shadow: 0 18px 32px rgba(250, 204, 21, 0.18);
+}
+
+.theme-neon .playing-card.card-face {
+  border-color: #67e8f9;
+  box-shadow: 0 18px 32px rgba(34, 211, 238, 0.2);
+}
+
+.theme-velvet .playing-card.card-face {
+  border-color: #fb7185;
+  box-shadow: 0 18px 32px rgba(244, 63, 94, 0.2);
+}
+
+.chip-burst {
+  border-radius: 999px;
+  font-size: clamp(1.25rem, 5vw, 2.75rem);
+  font-weight: 950;
+  letter-spacing: 0;
+  line-height: 1;
+  padding: 0.3em 0.5em;
+  pointer-events: none;
+  position: fixed;
+  right: clamp(1rem, 4vw, 3rem);
+  top: 5.5rem;
+  z-index: 50;
+}
+
+.chip-burst-win {
+  animation: chip-float-win 1100ms ease-out both;
+  background: rgba(16, 185, 129, 0.2);
+  box-shadow: 0 0 34px rgba(52, 211, 153, 0.35);
+  color: #bbf7d0;
+}
+
+.chip-burst-loss {
+  animation: chip-float-loss 900ms ease-out both;
+  background: rgba(248, 113, 113, 0.18);
+  box-shadow: 0 0 28px rgba(248, 113, 113, 0.28);
+  color: #fecaca;
+}
+
 .playing-card {
   animation: deal-card 520ms cubic-bezier(0.17, 0.84, 0.44, 1) both;
   animation-delay: var(--deal-delay, 0ms);
@@ -234,6 +277,40 @@ input:disabled {
   }
 }
 
+@keyframes chip-float-win {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, 18px, 0) scale(0.88);
+  }
+
+  18% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1.04);
+  }
+
+  100% {
+    opacity: 0;
+    transform: translate3d(0, -54px, 0) scale(1.12);
+  }
+}
+
+@keyframes chip-float-loss {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, -8px, 0) scale(0.92);
+  }
+
+  18% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+
+  100% {
+    opacity: 0;
+    transform: translate3d(0, 42px, 0) scale(0.96);
+  }
+}
+
 @keyframes result-burst {
   0% {
     opacity: 0;
@@ -395,6 +472,7 @@ input:disabled {
   .result-stage::before,
   .result-burst,
   .result-message,
+  .chip-burst,
   .hand-row.is-winning h2,
   .hand-row.is-winning span {
     animation-duration: 1ms;

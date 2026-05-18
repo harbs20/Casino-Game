@@ -57,14 +57,34 @@ function resultToneFor(payout, wager) {
   return "loss";
 }
 
+function pairSidePayout(hand, wager) {
+  if (wager <= 0 || hand.length < 2 || hand[0].rank !== hand[1].rank) return 0;
+  return hand[0].suit === hand[1].suit ? wager * 26 : wager * 12;
+}
+
+function pairSideMessage(hand, wager, payout) {
+  if (wager <= 0) return "";
+  if (payout <= 0) return "Pair side bet missed.";
+  const suited = hand[0].suit === hand[1].suit;
+  return `${suited ? "Suited pair" : "Pair"} side bet paid ${payout} chips.`;
+}
+
+function withSideMessage(message, sideMessage) {
+  return sideMessage ? `${message} ${sideMessage}` : message;
+}
+
 export default function Blackjack({ wallet }) {
   const [bet, setBet] = useState(100);
+  const [pairBet, setPairBet] = useState(0);
   const [roundBet, setRoundBet] = useState(0);
+  const [roundSideBet, setRoundSideBet] = useState(0);
+  const [roundSidePayout, setRoundSidePayout] = useState(0);
   const [deck, setDeck] = useState([]);
   const [player, setPlayer] = useState([]);
   const [dealer, setDealer] = useState([]);
   const [phase, setPhase] = useState("betting");
   const [message, setMessage] = useState("Set a bet and deal into the shoe.");
+  const [sideMessage, setSideMessage] = useState("");
   const [roundId, setRoundId] = useState(0);
   const [resultTone, setResultTone] = useState(null);
 
@@ -75,6 +95,7 @@ export default function Blackjack({ wallet }) {
   function settleRound(payout, nextMessage, nextDeck, nextPlayer, nextDealer, wager = roundBet) {
     wallet.settleGame(payout, {
       profit: payout - wager,
+      wager,
       game: "Blackjack",
       message: nextMessage,
     });
@@ -106,39 +127,79 @@ export default function Blackjack({ wallet }) {
       nextMessage = "Push. Your bet is returned.";
     }
 
-    settleRound(payout, nextMessage, shoe, nextPlayer, dealerHand, wager);
+    settleRound(
+      payout + roundSidePayout,
+      withSideMessage(nextMessage, sideMessage),
+      shoe,
+      nextPlayer,
+      dealerHand,
+      wager + roundSideBet
+    );
   }
 
   function deal() {
     const wager = cleanBet(bet, wallet.chips);
-    if (!wallet.chargeBet(wager)) return;
+    if (wager <= 0) {
+      setMessage("Blackjack needs a main bet before the cards come out.");
+      return;
+    }
+
+    const sideWager = cleanBet(pairBet, Math.max(0, wallet.chips - wager));
+    const totalWager = wager + sideWager;
+    if (!wallet.chargeBet(totalWager, { game: "Blackjack" })) return;
 
     const shoe = shuffle(createDeck());
     const nextPlayer = [shoe.pop(), shoe.pop()];
     const nextDealer = [shoe.pop(), shoe.pop()];
     const playerBlackjack = isNatural(nextPlayer);
     const dealerBlackjack = isNatural(nextDealer);
+    const sidePayout = pairSidePayout(nextPlayer, sideWager);
+    const nextSideMessage = pairSideMessage(nextPlayer, sideWager, sidePayout);
 
     setRoundId((current) => current + 1);
     setResultTone(null);
     setRoundBet(wager);
+    setRoundSideBet(sideWager);
+    setRoundSidePayout(sidePayout);
+    setSideMessage(nextSideMessage);
     setDeck(shoe);
     setPlayer(nextPlayer);
     setDealer(nextDealer);
 
     if (playerBlackjack || dealerBlackjack) {
       if (playerBlackjack && dealerBlackjack) {
-        settleRound(wager, "Both hands have blackjack. Push.", shoe, nextPlayer, nextDealer, wager);
+        settleRound(
+          wager + sidePayout,
+          withSideMessage("Both hands have blackjack. Push.", nextSideMessage),
+          shoe,
+          nextPlayer,
+          nextDealer,
+          totalWager
+        );
       } else if (playerBlackjack) {
         const payout = Math.floor(wager * 2.5);
-        settleRound(payout, `Blackjack pays ${payout - wager} chips.`, shoe, nextPlayer, nextDealer, wager);
+        settleRound(
+          payout + sidePayout,
+          withSideMessage(`Blackjack pays ${payout - wager} chips.`, nextSideMessage),
+          shoe,
+          nextPlayer,
+          nextDealer,
+          totalWager
+        );
       } else {
-        settleRound(0, "Dealer has blackjack.", shoe, nextPlayer, nextDealer, wager);
+        settleRound(
+          sidePayout,
+          withSideMessage("Dealer has blackjack.", nextSideMessage),
+          shoe,
+          nextPlayer,
+          nextDealer,
+          totalWager
+        );
       }
       return;
     }
 
-    setMessage("Your move. Hit, stand, or double down.");
+    setMessage(withSideMessage("Your move. Hit, stand, or double down.", nextSideMessage));
     setPhase("playing");
   }
 
@@ -150,7 +211,14 @@ export default function Blackjack({ wallet }) {
     setPlayer(nextPlayer);
 
     if (handValue(nextPlayer) > 21) {
-      settleRound(0, "You busted. Dealer takes the bet.", shoe, nextPlayer, dealer);
+      settleRound(
+        roundSidePayout,
+        withSideMessage("You busted. Dealer takes the bet.", sideMessage),
+        shoe,
+        nextPlayer,
+        dealer,
+        roundBet + roundSideBet
+      );
     }
   }
 
@@ -161,7 +229,7 @@ export default function Blackjack({ wallet }) {
 
   function doubleDown() {
     if (!canAct || player.length !== 2) return;
-    if (!wallet.chargeBet(roundBet)) return;
+    if (!wallet.chargeBet(roundBet, { game: "Blackjack" })) return;
 
     const doubledBet = roundBet * 2;
     const shoe = [...deck];
@@ -171,7 +239,14 @@ export default function Blackjack({ wallet }) {
     setPlayer(nextPlayer);
 
     if (handValue(nextPlayer) > 21) {
-      settleRound(0, "Double down drew a bust card.", shoe, nextPlayer, dealer, doubledBet);
+      settleRound(
+        roundSidePayout,
+        withSideMessage("Double down drew a bust card.", sideMessage),
+        shoe,
+        nextPlayer,
+        dealer,
+        doubledBet + roundSideBet
+      );
       return;
     }
 
@@ -212,6 +287,26 @@ export default function Blackjack({ wallet }) {
           ))}
         </div>
 
+        <label htmlFor="blackjack-pair-bet" className="mt-5 block text-sm font-bold uppercase tracking-[0.22em] text-slate-400">
+          Pair Side Bet
+        </label>
+        <div className="mt-3 flex rounded-lg border border-white/10 bg-black/30">
+          <span className="grid w-12 place-items-center text-yellow-300">$</span>
+          <input
+            id="blackjack-pair-bet"
+            type="number"
+            min="0"
+            step="10"
+            value={pairBet}
+            disabled={phase === "playing"}
+            onChange={(event) => setPairBet(cleanBet(event.target.value, 100000))}
+            className="min-w-0 flex-1 bg-transparent px-3 py-3 text-white outline-none"
+          />
+        </div>
+        <p className="mt-2 text-xs leading-5 text-slate-400">
+          Pair pays 11:1. Suited pair pays 25:1.
+        </p>
+
         <button
           type="button"
           onClick={deal}
@@ -223,7 +318,12 @@ export default function Blackjack({ wallet }) {
 
         <div className="mt-5 rounded-lg border border-white/10 bg-black/25 p-4">
           <div className="text-xs uppercase tracking-[0.22em] text-slate-500">Round Bet</div>
-          <div className="mt-1 text-2xl font-black text-white">{roundBet} chips</div>
+          <div className="mt-1 text-2xl font-black text-white">{roundBet + roundSideBet} chips</div>
+          {roundSideBet > 0 && (
+            <div className="mt-1 text-xs uppercase tracking-[0.18em] text-yellow-200">
+              Pair side: {roundSideBet}
+            </div>
+          )}
         </div>
 
         <p className={`result-message mt-4 rounded-lg border border-emerald-300/20 bg-emerald-950/30 p-4 text-sm leading-6 text-emerald-100 ${resultTone ? `is-${resultTone}` : ""}`}>

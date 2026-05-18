@@ -1,21 +1,26 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Baccarat from "./Baccarat";
 import Blackjack from "./Blackjack";
 import Roulette from "./Roulette";
 import Slots from "./Slots";
-
-const PROFILE_KEY = "casino-royale-profile-v1";
-
-const defaultProfile = {
-  username: "Guest Player",
-  level: 1,
-  xp: 0,
-  chips: 1000,
-  cashIns: 0,
-  gamesPlayed: 0,
-  biggestWin: 0,
-  totalCashedOut: 0,
-};
+import {
+  achievementDefinitions,
+  addHistoryEntry,
+  addLedgerEntry,
+  calculateStats,
+  claimDailyChallenge,
+  createProfile,
+  dailyChallengeTemplates,
+  getUnlockedThemes,
+  getVipTier,
+  loadCasinoStore,
+  makeId,
+  normalizeProfile,
+  normalizeStore,
+  PROFILE_STORE_KEY,
+  unlockAchievements,
+  updateDailyProgress,
+} from "./casinoProgress";
 
 const games = [
   {
@@ -23,8 +28,8 @@ const games = [
     name: "Blackjack",
     icon: "A",
     accent: "from-amber-300 to-yellow-500",
-    description: "Hit, stand, or double down against the dealer.",
-    detail: "Dealer stands on 17",
+    description: "Hit, stand, double down, or chase a pair side bet.",
+    detail: "Pair side bet",
     component: Blackjack,
   },
   {
@@ -32,8 +37,8 @@ const games = [
     name: "Slots",
     icon: "7",
     accent: "from-fuchsia-400 to-rose-500",
-    description: "Spin three rows and chase center-line payouts.",
-    detail: "Five win lines",
+    description: "Spin five lines and back a bonus symbol.",
+    detail: "Bonus bet",
     component: Slots,
   },
   {
@@ -41,8 +46,8 @@ const games = [
     name: "Roulette",
     icon: "0",
     accent: "from-red-500 to-emerald-400",
-    description: "Pick colors, odds, ranges, or one lucky number.",
-    detail: "0-36 wheel",
+    description: "Stack color, dozen, column, range, parity, and number bets.",
+    detail: "Multi-bet felt",
     component: Roulette,
   },
   {
@@ -50,23 +55,26 @@ const games = [
     name: "Baccarat",
     icon: "9",
     accent: "from-sky-300 to-cyan-500",
-    description: "Back player, banker, or tie. Closest to 9 wins.",
-    detail: "Simple third-card draw",
+    description: "Back player, banker, tie, or pair side bets.",
+    detail: "Pair side bets",
     component: Baccarat,
   },
 ];
 
-function loadProfile() {
-  try {
-    const stored = localStorage.getItem(PROFILE_KEY);
-    return stored ? { ...defaultProfile, ...JSON.parse(stored) } : defaultProfile;
-  } catch {
-    return defaultProfile;
-  }
-}
-
 function formatChips(value) {
   return new Intl.NumberFormat("en-US").format(value);
+}
+
+function formatSigned(value) {
+  if (value > 0) return `+${formatChips(value)}`;
+  return formatChips(value);
+}
+
+function formatTime(value) {
+  return new Intl.DateTimeFormat("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(new Date(value));
 }
 
 function cleanAmount(value, fallback = 0) {
@@ -75,61 +83,168 @@ function cleanAmount(value, fallback = 0) {
   return Math.max(0, Math.floor(amount));
 }
 
+function cleanSignedAmount(value, fallback = 0) {
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) return fallback;
+  return Math.trunc(amount);
+}
+
+function syncLedgerEntry(entry) {
+  fetch("http://127.0.0.1:8787/ledger", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(entry),
+  }).catch(() => {});
+}
+
 export default function App() {
-  const [profile, setProfile] = useState(loadProfile);
+  const [store, setStore] = useState(loadCasinoStore);
   const [screen, setScreen] = useState("lobby");
   const [cashOutAmount, setCashOutAmount] = useState(250);
   const [notice, setNotice] = useState("Cash in chips, play the tables, then cash out chips for XP.");
+  const [chipBurst, setChipBurst] = useState(null);
+  const syncedLedgerId = useRef(null);
 
+  const profile = store.profiles.find((item) => item.id === store.activeProfileId) || store.profiles[0];
   const activeGame = games.find((game) => game.id === screen);
   const ActiveGame = activeGame?.component;
-  const cashInAmount = profile.level * 500;
+  const vipTier = getVipTier(profile.level);
+  const vipBonus = Math.max(0, vipTier.level - 1) * 100;
+  const cashInAmount = profile.level * 500 + vipBonus;
   const xpPercent = Math.min(100, (profile.xp / 1000) * 100);
+  const stats = calculateStats(profile);
+  const unlockedThemes = getUnlockedThemes(profile.level);
 
   useEffect(() => {
-    localStorage.setItem(PROFILE_KEY, JSON.stringify(profile));
-  }, [profile]);
+    localStorage.setItem(PROFILE_STORE_KEY, JSON.stringify(normalizeStore(store)));
+  }, [store]);
+
+  useEffect(() => {
+    const latestLedgerEntry = profile.ledger[0];
+    if (!profile.backendLedgerEnabled || !latestLedgerEntry || syncedLedgerId.current === latestLedgerEntry.id) return;
+    syncedLedgerId.current = latestLedgerEntry.id;
+    syncLedgerEntry({
+      ...latestLedgerEntry,
+      profileId: profile.id,
+      username: profile.username,
+    });
+  }, [profile.backendLedgerEnabled, profile.id, profile.ledger, profile.username]);
+
+  function updateActiveProfile(updater) {
+    setStore((current) => {
+      const active = current.profiles.find((item) => item.id === current.activeProfileId) || current.profiles[0];
+      const nextProfile = normalizeProfile(updater(active));
+      return {
+        ...current,
+        profiles: current.profiles.map((item) => (item.id === active.id ? nextProfile : item)),
+      };
+    });
+  }
+
+  function showChipBurst(type, amount) {
+    setChipBurst({ id: makeId("chip"), type, amount });
+  }
+
+  function playSound(type) {
+    if (!profile.soundEnabled) return;
+    const AudioContext = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContext) return;
+
+    const context = new AudioContext();
+    const oscillator = context.createOscillator();
+    const gain = context.createGain();
+    const tones = {
+      bet: [180, 0.08],
+      win: [660, 0.16],
+      loss: [120, 0.12],
+      cash: [420, 0.14],
+      achievement: [820, 0.22],
+    };
+    const [frequency, duration] = tones[type] || tones.cash;
+    oscillator.frequency.value = frequency;
+    oscillator.type = type === "loss" ? "sawtooth" : "triangle";
+    gain.gain.setValueAtTime(0.0001, context.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.18, context.currentTime + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, context.currentTime + duration);
+    oscillator.connect(gain);
+    gain.connect(context.destination);
+    oscillator.start();
+    oscillator.stop(context.currentTime + duration);
+  }
+
+  function finalizeProgress(nextProfile, event) {
+    let progressed = updateDailyProgress(nextProfile, event);
+    const achievementResult = unlockAchievements(progressed);
+    progressed = achievementResult.profile;
+    return { profile: progressed, unlocked: achievementResult.unlocked };
+  }
 
   function cashIn() {
-    setProfile((current) => ({
-      ...current,
-      chips: current.chips + current.level * 500,
-      cashIns: current.cashIns + 1,
-    }));
-    setNotice(`Cashier issued ${formatChips(cashInAmount)} chips for Level ${profile.level}.`);
+    playSound("cash");
+    updateActiveProfile((current) => {
+      const currentTier = getVipTier(current.level);
+      const amount = current.level * 500 + Math.max(0, currentTier.level - 1) * 100;
+      const ledgerResult = addLedgerEntry(
+        {
+          ...current,
+          chips: current.chips + amount,
+          cashIns: current.cashIns + 1,
+        },
+        { type: "cash-in", amount, balanceAfter: current.chips + amount }
+      );
+      setNotice(`Cashier issued ${formatChips(amount)} chips for Level ${current.level} ${currentTier.label}.`);
+      showChipBurst("win", amount);
+      return ledgerResult.profile;
+    });
   }
 
   function cashOut() {
-    const amount = Math.min(cleanAmount(cashOutAmount), profile.chips);
-    if (amount <= 0) {
-      setNotice("Choose how many chips you want to cash out first.");
-      return;
-    }
+    let playedSound = false;
+    updateActiveProfile((current) => {
+      const amount = Math.min(cleanAmount(cashOutAmount), current.chips);
+      if (amount <= 0) {
+        setNotice("Choose how many chips you want to cash out first.");
+        return current;
+      }
 
-    const totalXp = profile.xp + amount;
-    const levelsGained = Math.floor(totalXp / 1000);
-
-    setProfile((current) => {
-      const safeAmount = Math.min(amount, current.chips);
-      const nextTotalXp = current.xp + safeAmount;
-      return {
+      const nextTotalXp = current.xp + amount;
+      const levelsGained = Math.floor(nextTotalXp / 1000);
+      const cashedOut = {
         ...current,
-        chips: current.chips - safeAmount,
+        chips: current.chips - amount,
         xp: nextTotalXp % 1000,
-        level: current.level + Math.floor(nextTotalXp / 1000),
-        totalCashedOut: current.totalCashedOut + safeAmount,
+        level: current.level + levelsGained,
+        totalCashedOut: current.totalCashedOut + amount,
       };
-    });
+      const dailyProgress = updateDailyProgress(cashedOut, { type: "cashout", amount });
+      const achievementResult = unlockAchievements(dailyProgress);
+      const ledgerResult = addLedgerEntry(achievementResult.profile, {
+        type: "cash-out",
+        amount: -amount,
+        xp: amount,
+        balanceAfter: achievementResult.profile.chips,
+      });
 
-    setNotice(
-      levelsGained > 0
-        ? `Cashed out ${formatChips(amount)} chips for XP. Level ${profile.level + levelsGained} unlocked.`
-        : `Cashed out ${formatChips(amount)} chips for ${formatChips(amount)} XP.`
-    );
+      const unlockText =
+        achievementResult.unlocked.length > 0
+          ? ` Achievement unlocked: ${achievementResult.unlocked.map((item) => item.title).join(", ")}.`
+          : "";
+      setNotice(
+        levelsGained > 0
+          ? `Cashed out ${formatChips(amount)} chips. Level ${current.level + levelsGained} unlocked.${unlockText}`
+          : `Cashed out ${formatChips(amount)} chips for ${formatChips(amount)} XP.${unlockText}`
+      );
+      showChipBurst("loss", amount);
+      if (!playedSound) {
+        playSound(achievementResult.unlocked.length > 0 ? "achievement" : "cash");
+        playedSound = true;
+      }
+      return ledgerResult.profile;
+    });
     setCashOutAmount(0);
   }
 
-  function chargeBet(amount) {
+  function chargeBet(amount, detail = {}) {
     const wager = cleanAmount(amount);
     if (wager <= 0) {
       setNotice("Bets need to be at least 1 chip.");
@@ -139,20 +254,140 @@ export default function App() {
       setNotice("Not enough chips for that bet. Cash in or lower the wager.");
       return false;
     }
-    setProfile((current) => ({ ...current, chips: current.chips - wager }));
+
+    updateActiveProfile((current) => {
+      if (wager > current.chips) {
+        setNotice("Not enough chips for that bet. Cash in or lower the wager.");
+        return current;
+      }
+
+      const ledgerResult = addLedgerEntry(
+        { ...current, chips: current.chips - wager },
+        {
+          type: "wager",
+          game: detail.game || "Table",
+          amount: -wager,
+          balanceAfter: current.chips - wager,
+        }
+      );
+      showChipBurst("loss", wager);
+      return ledgerResult.profile;
+    });
+
+    playSound("bet");
     return true;
   }
 
   function settleGame(payout, result = {}) {
     const safePayout = cleanAmount(payout);
-    const profit = cleanAmount(result.profit);
-    setProfile((current) => ({
-      ...current,
-      chips: current.chips + safePayout,
-      gamesPlayed: current.gamesPlayed + 1,
-      biggestWin: Math.max(current.biggestWin, profit),
+    const profit = cleanSignedAmount(result.profit, safePayout);
+    const wager = cleanAmount(result.wager, Math.max(0, safePayout - profit));
+    const game = result.game || "Casino";
+    let cue = profit > 0 ? "win" : "loss";
+
+    updateActiveProfile((current) => {
+      const historyProfile = addHistoryEntry(
+        {
+          ...current,
+          chips: current.chips + safePayout,
+          gamesPlayed: current.gamesPlayed + 1,
+          biggestWin: Math.max(current.biggestWin, profit),
+          currentWinStreak: profit > 0 ? current.currentWinStreak + 1 : 0,
+          bestWinStreak: profit > 0 ? Math.max(current.bestWinStreak, current.currentWinStreak + 1) : current.bestWinStreak,
+        },
+        {
+          game,
+          wager,
+          payout: safePayout,
+          profit,
+          message: result.message || "",
+          tags: result.tags || [],
+        }
+      );
+      const progressResult = finalizeProgress(historyProfile, { type: "round", game, wager, profit });
+      const ledgerResult = addLedgerEntry(progressResult.profile, {
+        type: "settlement",
+        game,
+        amount: safePayout,
+        wager,
+        profit,
+        balanceAfter: progressResult.profile.chips,
+      });
+      const achievementText =
+        progressResult.unlocked.length > 0
+          ? ` Achievement unlocked: ${progressResult.unlocked.map((item) => item.title).join(", ")}.`
+          : "";
+
+      if (progressResult.unlocked.length > 0) cue = "achievement";
+      if (result.message) setNotice(`${result.message}${achievementText}`);
+      if (safePayout > 0) showChipBurst("win", safePayout);
+      return ledgerResult.profile;
+    });
+
+    playSound(cue);
+  }
+
+  function claimChallenge(challengeId) {
+    updateActiveProfile((current) => {
+      const { profile: rewardedProfile, reward } = claimDailyChallenge(current, challengeId);
+      if (reward <= 0) return current;
+      const ledgerResult = addLedgerEntry(rewardedProfile, {
+        type: "daily-reward",
+        amount: reward,
+        balanceAfter: rewardedProfile.chips,
+      });
+      setNotice(`Daily challenge claimed for ${formatChips(reward)} bonus chips.`);
+      showChipBurst("win", reward);
+      playSound("achievement");
+      return ledgerResult.profile;
+    });
+  }
+
+  function createProfileSlot() {
+    const nextProfile = createProfile(`Player ${store.profiles.length + 1}`);
+    setStore((current) => ({
+      activeProfileId: nextProfile.id,
+      profiles: [...current.profiles, nextProfile],
     }));
-    if (result.message) setNotice(result.message);
+    setNotice(`${nextProfile.username} is ready at the cashier.`);
+  }
+
+  function selectProfile(profileId) {
+    setStore((current) => ({ ...current, activeProfileId: profileId }));
+    setNotice("Profile loaded.");
+  }
+
+  function renameProfile(username) {
+    const nextName = username.trim() || "Guest Player";
+    updateActiveProfile((current) => ({ ...current, username: nextName }));
+    setNotice(`Profile renamed to ${nextName}.`);
+  }
+
+  function deleteActiveProfile() {
+    setStore((current) => {
+      if (current.profiles.length <= 1) {
+        const replacement = createProfile();
+        return { activeProfileId: replacement.id, profiles: [replacement] };
+      }
+      const nextProfiles = current.profiles.filter((item) => item.id !== current.activeProfileId);
+      return { activeProfileId: nextProfiles[0].id, profiles: nextProfiles };
+    });
+    setNotice("Profile slot removed.");
+  }
+
+  function updateTheme(theme) {
+    updateActiveProfile((current) => {
+      const canUseTheme = getUnlockedThemes(current.level).some((item) => item.id === theme);
+      return { ...current, theme: canUseTheme ? theme : current.theme };
+    });
+  }
+
+  function toggleSound() {
+    updateActiveProfile((current) => ({ ...current, soundEnabled: !current.soundEnabled }));
+  }
+
+  function toggleBackendLedger() {
+    updateActiveProfile((current) => ({ ...current, backendLedgerEnabled: !current.backendLedgerEnabled }));
   }
 
   const wallet = {
@@ -163,43 +398,63 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen overflow-hidden bg-[#06130f] text-slate-100">
+    <div className={`theme-${profile.theme} min-h-screen overflow-hidden bg-[#06130f] text-slate-100`}>
       <div className="pointer-events-none fixed inset-0 bg-[radial-gradient(circle_at_top_left,rgba(250,204,21,0.18),transparent_32rem),radial-gradient(circle_at_bottom_right,rgba(20,184,166,0.18),transparent_34rem)]" />
+      <ChipBurst burst={chipBurst} />
       <div className="relative mx-auto flex min-h-screen w-full max-w-7xl flex-col px-4 py-4 sm:px-6 lg:px-8">
-        <Header profile={profile} xpPercent={xpPercent} onLobby={() => setScreen("lobby")} />
+        <Header
+          profile={profile}
+          vipTier={vipTier}
+          xpPercent={xpPercent}
+          onLobby={() => setScreen("lobby")}
+          onToggleSound={toggleSound}
+        />
 
         {screen === "lobby" ? (
-          <main className="grid flex-1 gap-6 py-6 lg:grid-cols-[minmax(0,1fr)_360px]">
-            <section className="flex min-h-[560px] flex-col justify-center">
-              <div className="max-w-3xl">
+          <main className="grid flex-1 gap-6 py-6 lg:grid-cols-[minmax(0,1fr)_390px]">
+            <section>
+              <div className="min-h-[420px] content-center">
                 <p className="text-sm font-semibold uppercase tracking-[0.28em] text-emerald-300">
-                  Level-based casino bank
+                  {vipTier.label} casino bank
                 </p>
-                <h1 className="mt-4 text-4xl font-black text-white sm:text-6xl">
-                  Casino Royale
-                </h1>
+                <h1 className="mt-4 text-4xl font-black text-white sm:text-6xl">Casino Royale</h1>
                 <p className="mt-5 max-w-2xl text-base leading-7 text-slate-300 sm:text-lg">
-                  Cash in for chips based on your level, play the tables, then cash out winnings for XP.
-                  Every 1000 XP raises your level and makes the cashier more generous.
+                  Cash in for chips, stack table bets, complete daily challenges, unlock VIP perks, and cash out winnings for XP.
                 </p>
               </div>
 
-              <div className="mt-10 grid gap-4 sm:grid-cols-2">
+              <div className="grid gap-4 sm:grid-cols-2">
                 {games.map((game) => (
                   <GameTile key={game.id} game={game} onPlay={() => setScreen(game.id)} />
                 ))}
               </div>
+
+              <PlayerHub
+                profile={profile}
+                stats={stats}
+                onClaimChallenge={claimChallenge}
+              />
             </section>
 
             <CashierPanel
+              store={store}
               profile={profile}
               notice={notice}
               cashInAmount={cashInAmount}
               cashOutAmount={cashOutAmount}
               xpPercent={xpPercent}
+              vipTier={vipTier}
+              unlockedThemes={unlockedThemes}
               onCashIn={cashIn}
               onCashOut={cashOut}
               onCashOutAmount={setCashOutAmount}
+              onCreateProfile={createProfileSlot}
+              onDeleteProfile={deleteActiveProfile}
+              onRenameProfile={renameProfile}
+              onSelectProfile={selectProfile}
+              onTheme={updateTheme}
+              onToggleBackendLedger={toggleBackendLedger}
+              onToggleSound={toggleSound}
             />
           </main>
         ) : (
@@ -223,6 +478,9 @@ export default function App() {
             </div>
 
             {ActiveGame && <ActiveGame wallet={wallet} />}
+            <div className="mt-6">
+              <HistoryPanel history={profile.history.slice(0, 5)} compact />
+            </div>
           </main>
         )}
       </div>
@@ -230,7 +488,7 @@ export default function App() {
   );
 }
 
-function Header({ profile, xpPercent, onLobby }) {
+function Header({ profile, vipTier, xpPercent, onLobby, onToggleSound }) {
   return (
     <header className="flex flex-col gap-4 border-b border-white/10 pb-4 sm:flex-row sm:items-center sm:justify-between">
       <button type="button" onClick={onLobby} className="flex items-center gap-3 text-left">
@@ -239,11 +497,13 @@ function Header({ profile, xpPercent, onLobby }) {
         </span>
         <span>
           <span className="block text-lg font-black text-white">Casino Royale</span>
-          <span className="block text-sm text-slate-400">{profile.username}</span>
+          <span className="block text-sm text-slate-400">
+            {profile.username} · {vipTier.label}
+          </span>
         </span>
       </button>
 
-      <div className="grid gap-3 sm:grid-cols-3 sm:items-center">
+      <div className="grid gap-3 sm:grid-cols-[auto_auto_minmax(13rem,1fr)_auto] sm:items-center">
         <Stat label="Chips" value={formatChips(profile.chips)} />
         <Stat label="Level" value={profile.level} />
         <div className="min-w-52 rounded-lg border border-white/10 bg-white/[0.06] px-4 py-3">
@@ -258,6 +518,17 @@ function Header({ profile, xpPercent, onLobby }) {
             />
           </div>
         </div>
+        <button
+          type="button"
+          onClick={onToggleSound}
+          className={`rounded-lg border px-4 py-3 text-sm font-black transition ${
+            profile.soundEnabled
+              ? "border-cyan-300 bg-cyan-300 text-slate-950"
+              : "border-white/10 bg-white/[0.06] text-slate-200 hover:border-cyan-300"
+          }`}
+        >
+          Sound {profile.soundEnabled ? "On" : "Off"}
+        </button>
       </div>
     </header>
   );
@@ -299,14 +570,24 @@ function GameTile({ game, onPlay }) {
 }
 
 function CashierPanel({
+  store,
   profile,
   notice,
   cashInAmount,
   cashOutAmount,
   xpPercent,
+  vipTier,
+  unlockedThemes,
   onCashIn,
   onCashOut,
   onCashOutAmount,
+  onCreateProfile,
+  onDeleteProfile,
+  onRenameProfile,
+  onSelectProfile,
+  onTheme,
+  onToggleBackendLedger,
+  onToggleSound,
 }) {
   const quickAmounts = [
     { label: "25%", value: Math.floor(profile.chips * 0.25) },
@@ -316,10 +597,20 @@ function CashierPanel({
 
   return (
     <aside className="self-start rounded-lg border border-yellow-300/25 bg-[#111c18]/90 p-5 shadow-2xl shadow-black/30">
-      <div className="flex items-start justify-between gap-4">
+      <ProfileManager
+        key={profile.id}
+        store={store}
+        profile={profile}
+        onCreateProfile={onCreateProfile}
+        onDeleteProfile={onDeleteProfile}
+        onRenameProfile={onRenameProfile}
+        onSelectProfile={onSelectProfile}
+      />
+
+      <div className="mt-6 flex items-start justify-between gap-4 border-t border-white/10 pt-6">
         <div>
           <h2 className="text-2xl font-black text-white">Cashier</h2>
-          <p className="mt-1 text-sm text-slate-400">Chips in, XP out.</p>
+          <p className="mt-1 text-sm text-slate-400">{vipTier.label}: {vipTier.perk}</p>
         </div>
         <div className="rounded-lg bg-yellow-300 px-3 py-2 text-right text-emerald-950">
           <div className="text-xs font-bold uppercase">Cash In</div>
@@ -388,6 +679,42 @@ function CashierPanel({
         {notice}
       </div>
 
+      <div className="mt-5 grid gap-3">
+        <label htmlFor="table-theme" className="text-sm font-bold uppercase tracking-[0.22em] text-slate-400">
+          VIP Theme
+        </label>
+        <select
+          id="table-theme"
+          value={profile.theme}
+          onChange={(event) => onTheme(event.target.value)}
+          className="rounded-lg border border-white/10 bg-black/30 px-4 py-3 text-white outline-none"
+        >
+          {unlockedThemes.map((theme) => (
+            <option key={theme.id} value={theme.id}>{theme.label}</option>
+          ))}
+        </select>
+        <div className="grid grid-cols-2 gap-2">
+          <button
+            type="button"
+            onClick={onToggleSound}
+            className="rounded-lg border border-white/10 px-3 py-2 text-sm font-bold text-slate-200 transition hover:border-cyan-300 hover:text-cyan-200"
+          >
+            Sound {profile.soundEnabled ? "On" : "Off"}
+          </button>
+          <button
+            type="button"
+            onClick={onToggleBackendLedger}
+            className={`rounded-lg border px-3 py-2 text-sm font-bold transition ${
+              profile.backendLedgerEnabled
+                ? "border-emerald-300 text-emerald-200"
+                : "border-white/10 text-slate-200 hover:border-emerald-300 hover:text-emerald-200"
+            }`}
+          >
+            Ledger {profile.backendLedgerEnabled ? "Sync" : "Local"}
+          </button>
+        </div>
+      </div>
+
       <dl className="mt-5 grid grid-cols-2 gap-3 text-sm">
         <SummaryItem label="Games" value={profile.gamesPlayed} />
         <SummaryItem label="Cash Ins" value={profile.cashIns} />
@@ -398,11 +725,229 @@ function CashierPanel({
   );
 }
 
+function ProfileManager({ store, profile, onCreateProfile, onDeleteProfile, onRenameProfile, onSelectProfile }) {
+  const [name, setName] = useState(profile.username);
+
+  return (
+    <div>
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <h2 className="text-xl font-black text-white">Save Slots</h2>
+          <p className="mt-1 text-sm text-slate-400">Multiple local casino careers.</p>
+        </div>
+        <button
+          type="button"
+          onClick={onCreateProfile}
+          className="rounded-lg bg-emerald-400 px-3 py-2 text-sm font-black text-emerald-950 transition hover:bg-emerald-300"
+        >
+          New
+        </button>
+      </div>
+
+      <select
+        value={profile.id}
+        onChange={(event) => onSelectProfile(event.target.value)}
+        className="mt-4 w-full rounded-lg border border-white/10 bg-black/30 px-4 py-3 text-white outline-none"
+      >
+        {store.profiles.map((item) => (
+          <option key={item.id} value={item.id}>
+            {item.username} · L{item.level} · {formatChips(item.chips)} chips
+          </option>
+        ))}
+      </select>
+
+      <div className="mt-3 grid grid-cols-[1fr_auto] gap-2">
+        <input
+          type="text"
+          value={name}
+          onChange={(event) => setName(event.target.value)}
+          className="min-w-0 rounded-lg border border-white/10 bg-black/30 px-4 py-3 text-white outline-none"
+          aria-label="Profile name"
+        />
+        <button
+          type="button"
+          onClick={() => onRenameProfile(name)}
+          className="rounded-lg border border-white/10 px-4 py-3 font-bold text-slate-200 transition hover:border-yellow-300 hover:text-yellow-200"
+        >
+          Save
+        </button>
+      </div>
+
+      <button
+        type="button"
+        onClick={onDeleteProfile}
+        className="mt-3 w-full rounded-lg border border-white/10 px-4 py-2 text-sm font-bold text-slate-300 transition hover:border-red-300 hover:text-red-200"
+      >
+        Delete Current Slot
+      </button>
+    </div>
+  );
+}
+
+function PlayerHub({ profile, stats, onClaimChallenge }) {
+  return (
+    <div className="mt-6 grid gap-4 xl:grid-cols-2">
+      <StatsDashboard stats={stats} profile={profile} />
+      <DailyChallenges profile={profile} onClaimChallenge={onClaimChallenge} />
+      <AchievementsPanel profile={profile} />
+      <HistoryPanel history={profile.history} />
+    </div>
+  );
+}
+
+function StatsDashboard({ stats, profile }) {
+  const gameStats = Object.entries(stats.byGame);
+
+  return (
+    <section className="rounded-lg border border-white/10 bg-white/[0.05] p-5">
+      <h2 className="text-xl font-black text-white">Stats Dashboard</h2>
+      <div className="mt-4 grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
+        <SummaryItem label="Win Rate" value={`${stats.winRate}%`} />
+        <SummaryItem label="Net" value={formatSigned(stats.profit)} />
+        <SummaryItem label="Wagered" value={formatChips(stats.wagered)} />
+        <SummaryItem label="Streak" value={`${profile.currentWinStreak}/${profile.bestWinStreak}`} />
+      </div>
+      <div className="mt-4 grid gap-2">
+        {gameStats.length === 0 ? (
+          <div className="rounded-lg border border-dashed border-white/15 px-4 py-4 text-sm text-slate-400">
+            Play a round to start building table stats.
+          </div>
+        ) : (
+          gameStats.map(([game, gameStat]) => (
+            <div key={game} className="grid grid-cols-[1fr_auto_auto] gap-3 rounded-lg border border-white/10 bg-black/20 px-3 py-2 text-sm">
+              <span className="font-bold text-white">{game}</span>
+              <span className="text-slate-300">{gameStat.rounds} rounds</span>
+              <span className={gameStat.profit >= 0 ? "font-black text-emerald-200" : "font-black text-red-200"}>
+                {formatSigned(gameStat.profit)}
+              </span>
+            </div>
+          ))
+        )}
+      </div>
+    </section>
+  );
+}
+
+function DailyChallenges({ profile, onClaimChallenge }) {
+  return (
+    <section className="rounded-lg border border-white/10 bg-white/[0.05] p-5">
+      <div className="flex items-center justify-between gap-3">
+        <h2 className="text-xl font-black text-white">Daily Challenges</h2>
+        <span className="text-xs uppercase tracking-[0.18em] text-slate-400">{profile.daily.date}</span>
+      </div>
+      <div className="mt-4 grid gap-3">
+        {dailyChallengeTemplates.map((template) => {
+          const challenge = profile.daily.challenges.find((item) => item.id === template.id);
+          const progress = challenge?.progress || 0;
+          const complete = progress >= template.target;
+          return (
+            <div key={template.id} className="rounded-lg border border-white/10 bg-black/20 p-3">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="font-black text-white">{template.label}</div>
+                  <div className="mt-1 text-xs uppercase tracking-[0.18em] text-slate-400">
+                    {formatChips(progress)} / {formatChips(template.target)} · +{template.reward}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  disabled={!complete || challenge?.claimed}
+                  onClick={() => onClaimChallenge(template.id)}
+                  className="rounded-lg bg-yellow-300 px-3 py-2 text-sm font-black text-emerald-950 transition hover:bg-yellow-200"
+                >
+                  {challenge?.claimed ? "Claimed" : "Claim"}
+                </button>
+              </div>
+              <div className="mt-3 h-2 overflow-hidden rounded-full bg-black/50">
+                <div
+                  className="h-full rounded-full bg-gradient-to-r from-cyan-300 to-yellow-300"
+                  style={{ width: `${Math.min(100, (progress / template.target) * 100)}%` }}
+                />
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function AchievementsPanel({ profile }) {
+  const unlocked = new Set(profile.achievements);
+
+  return (
+    <section className="rounded-lg border border-white/10 bg-white/[0.05] p-5">
+      <h2 className="text-xl font-black text-white">Achievements</h2>
+      <div className="mt-4 grid gap-2">
+        {achievementDefinitions.map((achievement) => {
+          const isUnlocked = unlocked.has(achievement.id);
+          return (
+            <div
+              key={achievement.id}
+              className={`rounded-lg border px-3 py-3 ${
+                isUnlocked
+                  ? "border-yellow-300/40 bg-yellow-300/10"
+                  : "border-white/10 bg-black/20 opacity-70"
+              }`}
+            >
+              <div className={isUnlocked ? "font-black text-yellow-100" : "font-black text-slate-300"}>
+                {achievement.title}
+              </div>
+              <div className="mt-1 text-sm text-slate-400">{achievement.description}</div>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function HistoryPanel({ history, compact = false }) {
+  return (
+    <section className="rounded-lg border border-white/10 bg-white/[0.05] p-5">
+      <h2 className="text-xl font-black text-white">Game History</h2>
+      <div className="mt-4 grid gap-2">
+        {history.length === 0 ? (
+          <div className="rounded-lg border border-dashed border-white/15 px-4 py-4 text-sm text-slate-400">
+            No rounds recorded yet.
+          </div>
+        ) : (
+          history.map((entry) => (
+            <div
+              key={entry.id}
+              className={`grid gap-2 rounded-lg border border-white/10 bg-black/20 px-3 py-3 text-sm ${
+                compact ? "sm:grid-cols-[auto_1fr_auto]" : "sm:grid-cols-[auto_1fr_auto_auto]"
+              }`}
+            >
+              <span className="font-bold text-slate-300">{formatTime(entry.time)}</span>
+              <span className="font-black text-white">{entry.game}</span>
+              {!compact && <span className="text-slate-300">Bet {formatChips(entry.wager)}</span>}
+              <span className={entry.profit >= 0 ? "font-black text-emerald-200" : "font-black text-red-200"}>
+                {formatSigned(entry.profit)}
+              </span>
+            </div>
+          ))
+        )}
+      </div>
+    </section>
+  );
+}
+
 function SummaryItem({ label, value }) {
   return (
     <div className="rounded-lg border border-white/10 bg-white/[0.05] px-3 py-3">
       <dt className="text-xs uppercase tracking-[0.18em] text-slate-500">{label}</dt>
       <dd className="mt-1 font-black text-white">{value}</dd>
+    </div>
+  );
+}
+
+function ChipBurst({ burst }) {
+  if (!burst) return null;
+  const sign = burst.type === "win" ? "+" : "-";
+  return (
+    <div key={burst.id} className={`chip-burst chip-burst-${burst.type}`} aria-hidden="true">
+      {sign}{formatChips(burst.amount)}
     </div>
   );
 }
