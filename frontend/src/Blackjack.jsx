@@ -1,258 +1,308 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
-// --- SVG Card Back ---
-const CardBack = () => (
-  <svg viewBox="0 0 80 120" width={56} height={84} className="rounded-lg border-2 border-white shadow-xl bg-black">
-    <rect x="3" y="3" width="74" height="114" rx="10" fill="#101928" stroke="#bbb" strokeWidth="3" />
-    <circle cx="40" cy="60" r="18" fill="#222" stroke="#fff" strokeWidth="2" />
-    <text x="40" y="68" fontSize="26" textAnchor="middle" fill="#bbb" fontWeight="bold">
-      ♠
-    </text>
-  </svg>
-);
-// SVG for dealer/player reveal
-const PlayingCard = ({ card, hidden }) => {
-  if (hidden)
-    return <span className="inline-flex items-center justify-center mx-1"><CardBack /></span>;
-  const isRed = card.suit === "♥" || card.suit === "♦";
-  return (
-    <span className="inline-flex flex-col items-center justify-center mx-1 relative">
-      <svg viewBox="0 0 80 120" width={56} height={84} className="rounded-lg border-2 border-yellow-400 shadow-xl bg-white">
-        <rect x="3" y="3" width="74" height="114" rx="10" fill="#fff" />
-        <text x="16" y="28" fontSize="22" fill={isRed ? "#EF4444" : "#222"} fontWeight="bold">{card.rank}</text>
-        <text x="40" y="70" fontSize="40" textAnchor="middle" fill={isRed ? "#F87171" : "#333"}>{card.suit}</text>
-        <text x="64" y="112" fontSize="22" fill={isRed ? "#EF4444" : "#222"} fontWeight="bold" textAnchor="end">{card.rank}</text>
-      </svg>
-    </span>
-  );
-};
-
-// --- Provably fair utils ---
-function generateServerSeed() {
-  return Math.random().toString(36).slice(2) + Date.now();
-}
-function sha256hex(str) {
-  return window.crypto.subtle.digest("SHA-256", new TextEncoder().encode(str)).then(buf =>
-    Array.from(new Uint8Array(buf)).map(x => x.toString(16).padStart(2, "0")).join("")
-  );
-}
-function getProvablyFairRNG(serverSeed, clientSeed, nonce, count = 20) {
-  let nums = [];
-  for (let i = 0; i < count; ++i) {
-    let toHash = `${serverSeed}:${clientSeed}:${nonce}:${i}`;
-    nums.push(
-      sha256hex(toHash).then(hex =>
-        parseInt(hex.slice(0, 13), 16) / 0x1fffffffffffff
-      )
-    );
-  }
-  return Promise.all(nums);
-}
-const SUITS = ["♠", "♥", "♦", "♣"];
-const RANKS = [
+const suits = ["♠", "♥", "♦", "♣"];
+const ranks = [
   { rank: "A", value: 11 },
-  { rank: "2", value: 2 }, { rank: "3", value: 3 }, { rank: "4", value: 4 },
-  { rank: "5", value: 5 }, { rank: "6", value: 6 }, { rank: "7", value: 7 },
-  { rank: "8", value: 8 }, { rank: "9", value: 9 }, { rank: "10", value: 10 },
-  { rank: "J", value: 10 }, { rank: "Q", value: 10 }, { rank: "K", value: 10 }
+  { rank: "2", value: 2 },
+  { rank: "3", value: 3 },
+  { rank: "4", value: 4 },
+  { rank: "5", value: 5 },
+  { rank: "6", value: 6 },
+  { rank: "7", value: 7 },
+  { rank: "8", value: 8 },
+  { rank: "9", value: 9 },
+  { rank: "10", value: 10 },
+  { rank: "J", value: 10 },
+  { rank: "Q", value: 10 },
+  { rank: "K", value: 10 },
 ];
+
+function createDeck() {
+  return suits.flatMap((suit) => ranks.map((rank) => ({ ...rank, suit })));
+}
+
+function shuffle(deck) {
+  const nextDeck = [...deck];
+  for (let index = nextDeck.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(Math.random() * (index + 1));
+    [nextDeck[index], nextDeck[swapIndex]] = [nextDeck[swapIndex], nextDeck[index]];
+  }
+  return nextDeck;
+}
+
 function handValue(hand) {
-  let value = hand.reduce((sum, c) => sum + c.value, 0);
-  let aces = hand.filter(c => c.rank === "A").length;
-  while (value > 21 && aces) { value -= 10; aces--; }
+  let value = hand.reduce((sum, card) => sum + card.value, 0);
+  let aces = hand.filter((card) => card.rank === "A").length;
+  while (value > 21 && aces > 0) {
+    value -= 10;
+    aces -= 1;
+  }
   return value;
 }
 
-export default function Blackjack({ onBack }) {
-  // --- Provably fair and blackjack state ---
-  const [serverSeed, setServerSeed] = useState(generateServerSeed());
-  const [serverSeedHash, setServerSeedHash] = useState("");
-  const [clientSeed] = useState("guestseed");
-  const [nonce, setNonce] = useState(0);
-  const [chips, setChips] = useState(1000);
+function isNatural(hand) {
+  return hand.length === 2 && handValue(hand) === 21;
+}
+
+function cleanBet(value, max) {
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) return 0;
+  return Math.max(0, Math.min(Math.floor(amount), max));
+}
+
+export default function Blackjack({ wallet }) {
   const [bet, setBet] = useState(100);
+  const [roundBet, setRoundBet] = useState(0);
   const [deck, setDeck] = useState([]);
   const [player, setPlayer] = useState([]);
   const [dealer, setDealer] = useState([]);
-  const [inPlay, setInPlay] = useState(false);
-  const [message, setMessage] = useState("");
-  const [done, setDone] = useState(false);
+  const [phase, setPhase] = useState("betting");
+  const [message, setMessage] = useState("Set a bet and deal into the shoe.");
 
-  useEffect(() => {
-    sha256hex(serverSeed).then(setServerSeedHash);
-  }, [serverSeed]);
+  const canAct = phase === "playing";
+  const playerScore = handValue(player);
+  const dealerScore = handValue(dealer);
 
-  const startGame = async () => {
-    if (bet < 10 || bet > chips) return;
-    const nums = await getProvablyFairRNG(serverSeed, clientSeed, nonce, 52);
-    let tmpDeck = [];
-    for (let suit of SUITS) for (let rankObj of RANKS) tmpDeck.push({ ...rankObj, suit });
-    for (let i = tmpDeck.length - 1; i >= 0; i--) {
-      const j = Math.floor(nums[i] * (i + 1)); [tmpDeck[i], tmpDeck[j]] = [tmpDeck[j], tmpDeck[i]];
+  function settleRound(payout, nextMessage, nextDeck, nextPlayer, nextDealer, wager = roundBet) {
+    wallet.settleGame(payout, {
+      profit: payout - wager,
+      game: "Blackjack",
+      message: nextMessage,
+    });
+    setDeck(nextDeck);
+    setPlayer(nextPlayer);
+    setDealer(nextDealer);
+    setMessage(nextMessage);
+    setPhase("roundover");
+  }
+
+  function resolveDealer(nextDeck, nextPlayer, nextDealer, wager) {
+    const dealerHand = [...nextDealer];
+    const shoe = [...nextDeck];
+    while (handValue(dealerHand) < 17) {
+      dealerHand.push(shoe.pop());
     }
-    const newDeck = tmpDeck;
-    const pHand = [newDeck.pop(), newDeck.pop()];
-    const dHand = [newDeck.pop(), newDeck.pop()];
-    setDeck(newDeck);
-    setPlayer(pHand);
-    setDealer(dHand);
-    setChips(c => c - bet);
-    setInPlay(true);
-    setDone(false);
-    setMessage("");
-    setNonce(n => n + 1);
-    setServerSeed(generateServerSeed());
-  };
-  const playerHit = () => {
-    if (!inPlay || done) return;
-    let d = [...deck];
-    let currHand = [...player];
-    currHand.push(d.pop());
-    setDeck(d);
-    setPlayer(currHand);
-    if (handValue(currHand) > 21) {
-      setMessage("You busted! 💥");
-      setInPlay(false);
-      setDone(true);
-    }
-  };
-  const playerStand = () => {
-    if (!inPlay || done) return;
-    let d = [...deck];
-    let dealerHand = [...dealer];
-    while (handValue(dealerHand) < 17) dealerHand.push(d.pop());
-    setDealer(dealerHand); setDeck(d);
-    const playerScore = handValue(player), dealerScore = handValue(dealerHand);
-    let msg;
+
+    const finalPlayerScore = handValue(nextPlayer);
+    const finalDealerScore = handValue(dealerHand);
     let payout = 0;
-    if (dealerScore > 21 || playerScore > dealerScore) {
-      msg = "You win! 🥳"; payout = bet * 2;
-    } else if (dealerScore === playerScore) {
-      msg = "Push! 🤝"; payout = bet;
-    } else {
-      msg = "Dealer wins! 😭";
-    }
-    setChips(c => c + payout);
-    setMessage(msg); setDone(true); setInPlay(false);
-  };
+    let nextMessage = "Dealer wins the hand.";
 
-  // --- BET BUTTONS ---
-  const quickBets = [
-    { label: "+100", fn: () => setBet(b => Math.min(b + 100, chips)) },
-    { label: "1/2", fn: () => setBet(Math.floor(bet / 2)) },
-    { label: "2x", fn: () => setBet(Math.min(bet * 2, chips)) },
-    { label: "MAX", fn: () => setBet(chips) },
-  ];
+    if (finalDealerScore > 21 || finalPlayerScore > finalDealerScore) {
+      payout = wager * 2;
+      nextMessage = `You win ${wager} chips.`;
+    } else if (finalPlayerScore === finalDealerScore) {
+      payout = wager;
+      nextMessage = "Push. Your bet is returned.";
+    }
+
+    settleRound(payout, nextMessage, shoe, nextPlayer, dealerHand, wager);
+  }
+
+  function deal() {
+    const wager = cleanBet(bet, wallet.chips);
+    if (!wallet.chargeBet(wager)) return;
+
+    const shoe = shuffle(createDeck());
+    const nextPlayer = [shoe.pop(), shoe.pop()];
+    const nextDealer = [shoe.pop(), shoe.pop()];
+    const playerBlackjack = isNatural(nextPlayer);
+    const dealerBlackjack = isNatural(nextDealer);
+
+    setRoundBet(wager);
+    setDeck(shoe);
+    setPlayer(nextPlayer);
+    setDealer(nextDealer);
+
+    if (playerBlackjack || dealerBlackjack) {
+      if (playerBlackjack && dealerBlackjack) {
+        settleRound(wager, "Both hands have blackjack. Push.", shoe, nextPlayer, nextDealer, wager);
+      } else if (playerBlackjack) {
+        const payout = Math.floor(wager * 2.5);
+        settleRound(payout, `Blackjack pays ${payout - wager} chips.`, shoe, nextPlayer, nextDealer, wager);
+      } else {
+        settleRound(0, "Dealer has blackjack.", shoe, nextPlayer, nextDealer, wager);
+      }
+      return;
+    }
+
+    setMessage("Your move. Hit, stand, or double down.");
+    setPhase("playing");
+  }
+
+  function hit() {
+    if (!canAct) return;
+    const shoe = [...deck];
+    const nextPlayer = [...player, shoe.pop()];
+    setDeck(shoe);
+    setPlayer(nextPlayer);
+
+    if (handValue(nextPlayer) > 21) {
+      settleRound(0, "You busted. Dealer takes the bet.", shoe, nextPlayer, dealer);
+    }
+  }
+
+  function stand() {
+    if (!canAct) return;
+    resolveDealer(deck, player, dealer, roundBet);
+  }
+
+  function doubleDown() {
+    if (!canAct || player.length !== 2) return;
+    if (!wallet.chargeBet(roundBet)) return;
+
+    const doubledBet = roundBet * 2;
+    const shoe = [...deck];
+    const nextPlayer = [...player, shoe.pop()];
+    setRoundBet(doubledBet);
+    setDeck(shoe);
+    setPlayer(nextPlayer);
+
+    if (handValue(nextPlayer) > 21) {
+      settleRound(0, "Double down drew a bust card.", shoe, nextPlayer, dealer, doubledBet);
+      return;
+    }
+
+    resolveDealer(shoe, nextPlayer, dealer, doubledBet);
+  }
 
   return (
-    <div className="min-h-screen w-full flex bg-[#0d1927] text-white font-mono">
-      {/* Left: Bet/Info Panel */}
-      <div className="w-full sm:w-[370px] px-4 py-7 sm:py-12 bg-[#142137] h-full flex flex-col gap-10 relative">
-        <div>
-          <div className="mb-4 text-gray-300 text-xs tracking-wide">BET AMOUNT</div>
-          <div className="flex items-center rounded-lg bg-[#17273e] px-4 py-3 mb-3">
-            <span className="mr-1 font-bold text-green-300 text-lg">$</span>
-            <input type="number" min="10" step="10" max={chips}
-              className="bg-transparent outline-none text-lg w-20 text-white"
-              value={bet}
-              onChange={e => setBet(Number(e.target.value))}
-              disabled={inPlay}
-            />
-          </div>
-          <div className="flex gap-2 mb-5">
-            {quickBets.map(q => (
-              <button key={q.label} onClick={q.fn} disabled={inPlay}
-                className="rounded-full bg-[#212d43] text-green-300 px-4 py-1 font-semibold text-xs hover:bg-green-700/10 transition-all">
-                {q.label}
-              </button>
-            ))}
-          </div>
-          <div className="bg-[#101928] rounded-xl px-4 py-5 flex flex-col items-center mb-1">
-            <div className="text-xs text-slate-400">POTENTIAL WIN (2x)</div>
-            <div className="font-bold text-2xl mt-1 text-green-400">{bet * 2 || 0} <span className="text-green-300">$</span></div>
-          </div>
-          <div className="mt-6 w-full flex justify-between items-center">
-            <span className="text-gray-400 text-base">Chips:</span>
-            <span className="text-xl font-bold text-white tracking-tight">{chips} <span className="text-green-300 text-base">🟢</span></span>
-          </div>
-          <button className="mt-6 w-full bg-blue-600 hover:bg-blue-500 py-3 rounded-xl text-lg font-extrabold tracking-wide shadow transition-all"
-            onClick={startGame} disabled={inPlay || bet < 10 || bet > chips}
+    <section className="grid gap-5 lg:grid-cols-[320px_minmax(0,1fr)]">
+      <div className="rounded-lg border border-white/10 bg-[#101c18] p-5 shadow-xl shadow-black/25">
+        <label htmlFor="blackjack-bet" className="text-sm font-bold uppercase tracking-[0.22em] text-slate-400">
+          Bet Amount
+        </label>
+        <div className="mt-3 flex rounded-lg border border-white/10 bg-black/30">
+          <span className="grid w-12 place-items-center text-emerald-300">$</span>
+          <input
+            id="blackjack-bet"
+            type="number"
+            min="10"
+            step="10"
+            value={bet}
+            disabled={phase === "playing"}
+            onChange={(event) => setBet(cleanBet(event.target.value, 100000))}
+            className="min-w-0 flex-1 bg-transparent px-3 py-3 text-white outline-none"
+          />
+        </div>
+
+        <div className="mt-3 grid grid-cols-4 gap-2">
+          {[25, 100, 250, wallet.chips].map((amount) => (
+            <button
+              key={amount}
+              type="button"
+              disabled={phase === "playing"}
+              onClick={() => setBet(cleanBet(amount, wallet.chips))}
+              className="rounded-lg border border-white/10 px-3 py-2 text-sm font-bold text-slate-200 transition hover:border-yellow-300 hover:text-yellow-200"
+            >
+              {amount === wallet.chips ? "Max" : amount}
+            </button>
+          ))}
+        </div>
+
+        <button
+          type="button"
+          onClick={deal}
+          disabled={phase === "playing" || wallet.chips <= 0}
+          className="mt-5 w-full rounded-lg bg-gradient-to-r from-yellow-300 to-amber-500 px-4 py-3 font-black text-emerald-950 shadow-lg shadow-yellow-500/20 transition hover:brightness-110"
+        >
+          Deal Cards
+        </button>
+
+        <div className="mt-5 rounded-lg border border-white/10 bg-black/25 p-4">
+          <div className="text-xs uppercase tracking-[0.22em] text-slate-500">Round Bet</div>
+          <div className="mt-1 text-2xl font-black text-white">{roundBet} chips</div>
+        </div>
+
+        <p className="mt-4 rounded-lg border border-emerald-300/20 bg-emerald-950/30 p-4 text-sm leading-6 text-emerald-100">
+          {message}
+        </p>
+      </div>
+
+      <div className="rounded-lg border border-emerald-300/20 bg-[linear-gradient(135deg,#0c3b2e,#071b16)] p-5 shadow-2xl shadow-black/30">
+        <TableRow
+          label="Dealer"
+          score={phase === "playing" ? "?" : dealerScore}
+          cards={dealer}
+          hideSecond={phase === "playing"}
+        />
+
+        <div className="my-6 h-px bg-white/10" />
+
+        <TableRow label="You" score={playerScore} cards={player} />
+
+        <div className="mt-8 flex flex-wrap justify-center gap-3">
+          <button
+            type="button"
+            disabled={!canAct}
+            onClick={hit}
+            className="rounded-lg bg-slate-100 px-6 py-3 font-black text-slate-950 transition hover:bg-white"
           >
-            DEAL CARDS
+            Hit
           </button>
-        </div>
-        <div className="flex-1" />
-        <div>
-          <button className="text-blue-400 underline cursor-pointer text-base mt-10" onClick={onBack}>
-            ← Back to Casino
+          <button
+            type="button"
+            disabled={!canAct}
+            onClick={stand}
+            className="rounded-lg bg-emerald-400 px-6 py-3 font-black text-emerald-950 transition hover:bg-emerald-300"
+          >
+            Stand
+          </button>
+          <button
+            type="button"
+            disabled={!canAct || player.length !== 2 || wallet.chips < roundBet}
+            onClick={doubleDown}
+            className="rounded-lg bg-yellow-300 px-6 py-3 font-black text-emerald-950 transition hover:bg-yellow-200"
+          >
+            Double
           </button>
         </div>
       </div>
-      {/* Right: Game Table */}
-      <div className="flex-1 flex flex-col items-center justify-center bg-[#0d1927] relative min-h-screen">
-        <div className="w-full max-w-2xl mx-auto pt-16 pb-28 px-1">
-          <div className="text-gray-300 uppercase tracking-widest text-lg mb-4 text-center font-medium flex items-center justify-center gap-4">
-            <span className="mr-2 text-2xl">♠</span>
-            Blackjack
+    </section>
+  );
+}
+
+function TableRow({ label, score, cards, hideSecond = false }) {
+  return (
+    <div>
+      <div className="mb-3 flex items-center justify-between">
+        <h2 className="text-lg font-black uppercase tracking-[0.22em] text-slate-200">{label}</h2>
+        <span className="rounded-full border border-white/10 px-4 py-1 text-sm font-black text-emerald-200">
+          {score}
+        </span>
+      </div>
+      <div className="flex min-h-32 flex-wrap items-center justify-center gap-3">
+        {cards.length === 0 ? (
+          <div className="rounded-lg border border-dashed border-white/20 px-5 py-10 text-slate-400">
+            Waiting for deal
           </div>
-          {/* Dealer row */}
-          <div className="flex flex-col items-center mb-6">
-            <div className="text-xs text-slate-400 mb-1 tracking-wide">DEALER</div>
-            <div className="flex">
-              {inPlay ? <>
-                <PlayingCard card={dealer[0]} hidden />
-                {dealer[1] && <PlayingCard card={dealer[1]} hidden={false} />}
-              </> : dealer.map((c, i) => <PlayingCard key={i} card={c} hidden={false} />)}
-            </div>
-          </div>
-          {/* Your row */}
-          <div className="flex flex-col items-center">
-            <div className="text-xs text-slate-400 mb-1 tracking-wide mt-4">YOU</div>
-            <div className="flex">
-              {player.map((c, i) => <PlayingCard key={i} card={c} hidden={false} />)}
-            </div>
-          </div>
-          <div className="text-center mt-4 mb-2 text-lg font-bold text-teal-300">
-            Total: {handValue(player)}
-          </div>
-          {/* Play buttons */}
-          <div className="mt-6 flex gap-2 items-center justify-center">
-            {inPlay && <>
-              <button className="bg-slate-800 text-lg text-white font-bold px-6 py-2 rounded-xl border border-slate-900/80 shadow hover:bg-slate-700"
-                onClick={playerHit}>Hit</button>
-              <button className="bg-green-500 text-lg text-white font-bold px-6 py-2 rounded-xl border border-green-700/80 shadow hover:bg-green-400"
-                onClick={playerStand}>Stand</button>
-              {/* Add more actions here */}
-            </>}
-          </div>
-          <div className="mt-6 text-xl text-center">{message}</div>
-        </div>
-        {/* --- Provably Fair Footer Bar --- */}
-        <div className="absolute left-0 right-0 bottom-0 flex justify-start px-10 pb-5">
-          <div className="flex items-center gap-3 text-slate-300 font-mono text-[1.15rem] select-none">
-            <span className="flex items-center gap-1 text-emerald-400 font-semibold">
-              {/* Shield/check SVG */}
-              <svg width="22" height="22" viewBox="0 0 20 20" fill="none" className="align-middle">
-                <path d="M10 2L3 5v5c0 5.25 7 8 7 8s7-2.75 7-8V5l-7-3z" stroke="#34d399" strokeWidth="2" />
-                <path d="M7.5 10.5l2 2 3-3" stroke="#34d399" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
-              <span className="font-semibold">Provably Fair</span>
-            </span>
-            <span className="opacity-60 mx-2 font-sans">|</span>
-            <span className="text-slate-400 font-sans">Infinite Deck Shuffling</span>
-            <span className="ml-6 group relative cursor-pointer font-sans">
-              <span className="underline underline-offset-4 text-xs text-emerald-300">Show Hash</span>
-              <span className="group-hover:scale-100 group-active:scale-100 scale-0 transition-all origin-bottom-left z-50 absolute left-0 bottom-8 w-[350px] bg-[#17273e] text-xs text-slate-400 px-3 py-2 rounded-xl shadow border border-emerald-600 font-mono whitespace-pre-wrap break-all">
-                {serverSeedHash}
-              </span>
-            </span>
-            <span className="ml-2 text-gray-500 text-xs font-mono">Nonce: {nonce}</span>
-            {done && (
-              <span className="ml-4 text-green-400 text-xs font-mono">Server Seed: {serverSeed}</span>
-            )}
-          </div>
+        ) : (
+          cards.map((card, index) => (
+            <PlayingCard key={`${card.rank}${card.suit}${index}`} card={card} hidden={hideSecond && index === 1} />
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+function PlayingCard({ card, hidden }) {
+  if (hidden) {
+    return (
+      <div className="playing-card grid h-28 w-20 place-items-center rounded-lg border-2 border-slate-200 bg-[#111827] shadow-xl">
+        <div className="grid h-12 w-12 place-items-center rounded-full border border-white/40 text-2xl text-slate-200">
+          ♠
         </div>
       </div>
+    );
+  }
+
+  const isRed = card.suit === "♥" || card.suit === "♦";
+  return (
+    <div className="playing-card flex h-28 w-20 flex-col justify-between rounded-lg border-2 border-yellow-300 bg-white p-2 font-black text-slate-950 shadow-xl">
+      <div className={isRed ? "text-red-500" : "text-slate-950"}>{card.rank}</div>
+      <div className={`self-center text-4xl ${isRed ? "text-red-500" : "text-slate-950"}`}>{card.suit}</div>
+      <div className={`self-end ${isRed ? "text-red-500" : "text-slate-950"}`}>{card.rank}</div>
     </div>
   );
 }
