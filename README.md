@@ -8,6 +8,7 @@ Casino Royale is a browser-based casino prototype built with React and Vite. It 
 - Multiple local save slots through `localStorage`.
 - Game history, stats dashboard, achievements, daily challenges, and claimable rewards.
 - Global leaderboard for deployed Netlify sites, backed by a serverless function and Netlify Blobs.
+- Promo codes for exclusive profile badges through a Netlify function.
 - VIP tiers with unlockable table themes.
 - Optional sound effects and chip movement animations.
 - Blackjack with hit, stand, double down, blackjack payouts, pushes, bust handling, and pair side bets.
@@ -79,7 +80,24 @@ This repo includes a root `netlify.toml` for the Vite frontend:
 - Functions directory: `netlify/functions`
 - Node version: `22`
 
-The global leaderboard uses `frontend/netlify/functions/leaderboard.mjs` and Netlify Blobs. The optional backend ledger server is local-only for now. The Netlify deploy runs as a frontend app with local profile saves in the browser and shared leaderboard scores on Netlify.
+The global leaderboard uses `frontend/netlify/functions/leaderboard.mjs` and Netlify Blobs. Promo codes use `frontend/netlify/functions/promo-code.mjs`. The optional backend ledger server is local-only for now. The Netlify deploy runs as a frontend app with local profile saves in the browser and shared leaderboard scores on Netlify.
+
+Promo codes can be configured in Netlify with a `PROMO_CODES_JSON` environment variable:
+
+```json
+[
+  {
+    "code": "YOUR-CODE",
+    "badge": {
+      "id": "your-badge",
+      "title": "Your Badge",
+      "description": "Exclusive promo badge.",
+      "accent": "yellow"
+    },
+    "rewardChips": 0
+  }
+]
+```
 
 To sync ledger entries to a deployed backend later, add a `VITE_LEDGER_API_URL` environment variable in Netlify that points to the backend origin.
 

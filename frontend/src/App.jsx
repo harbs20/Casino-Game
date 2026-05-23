@@ -21,6 +21,8 @@ import {
   getVipTier,
   loadCasinoStore,
   makeId,
+  normalizePromoBadge,
+  normalizePromoCode,
   normalizeProfile,
   normalizeStore,
   PROFILE_STORE_KEY,
@@ -73,6 +75,8 @@ const LEADERBOARD_API_ORIGIN = normalizeApiUrl(import.meta.env.VITE_LEADERBOARD_
 const LEADERBOARD_ENDPOINT = `${LEADERBOARD_API_ORIGIN}/.netlify/functions/leaderboard`;
 const LEADERBOARD_CACHE_KEY = "casino-royale-leaderboard-cache-v1";
 const MAX_LEADERBOARD_ENTRIES = 25;
+const PROMO_API_ORIGIN = normalizeApiUrl(import.meta.env.VITE_PROMO_API_URL || "");
+const PROMO_ENDPOINT = `${PROMO_API_ORIGIN}/.netlify/functions/promo-code`;
 
 function formatChips(value) {
   return new Intl.NumberFormat("en-US").format(value);
@@ -610,6 +614,79 @@ export default function App() {
     }
   }
 
+  async function redeemPromoCode(code) {
+    const codeId = normalizePromoCode(code);
+    if (!codeId) {
+      return { status: "missing-code", message: "Enter a promo code." };
+    }
+
+    if (profile.redeemedPromoCodes.includes(codeId)) {
+      return { status: "already-redeemed", message: "That promo code was already redeemed." };
+    }
+
+    try {
+      const response = await fetch(PROMO_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          code,
+          profileId: profile.id,
+          username: profile.username,
+          redeemedCodes: profile.redeemedPromoCodes,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok || data.status !== "redeemed") {
+        return {
+          status: data.status || "invalid",
+          message: data.message || "That promo code could not be redeemed.",
+        };
+      }
+
+      const badge = normalizePromoBadge(data.badge);
+      if (!badge) {
+        return { status: "bad-config", message: "That promo code is missing a badge." };
+      }
+
+      const rewardChips = cleanAmount(data.rewardChips);
+      const redeemedCodeId = normalizePromoCode(data.codeId || code);
+      let redeemed = false;
+      updateActiveProfile((current) => {
+        if (current.redeemedPromoCodes.includes(redeemedCodeId) || current.promoBadges.some((item) => item.id === badge.id)) {
+          return current;
+        }
+
+        redeemed = true;
+        const rewardedProfile = {
+          ...current,
+          chips: current.chips + rewardChips,
+          promoBadges: [badge, ...current.promoBadges],
+          redeemedPromoCodes: [redeemedCodeId, ...current.redeemedPromoCodes],
+        };
+
+        if (rewardChips <= 0) return rewardedProfile;
+        return addLedgerEntry(rewardedProfile, {
+          type: "promo-reward",
+          amount: rewardChips,
+          badge: badge.title,
+          balanceAfter: rewardedProfile.chips,
+        }).profile;
+      });
+
+      if (!redeemed) {
+        return { status: "already-redeemed", message: "That promo code was already redeemed." };
+      }
+
+      const rewardText = rewardChips > 0 ? ` +${formatChips(rewardChips)} chips.` : "";
+      setNotice(`${badge.title} badge unlocked.${rewardText}`);
+      if (rewardChips > 0) showChipBurst("win", rewardChips);
+      playSound("achievement");
+      return { status: "redeemed", message: `${badge.title} badge unlocked.${rewardText}` };
+    } catch {
+      return { status: "offline", message: "Promo code server is unavailable on this host." };
+    }
+  }
+
   const wallet = {
     chips: profile.chips,
     chargeBet,
@@ -678,6 +755,7 @@ export default function App() {
               onCreateProfile={createProfileSlot}
               onDeleteProfile={deleteActiveProfile}
               onRenameProfile={renameProfile}
+              onRedeemPromoCode={redeemPromoCode}
               onSelectProfile={selectProfile}
               onTheme={updateTheme}
               onToggleBackendLedger={toggleBackendLedger}
@@ -814,6 +892,7 @@ function CashierPanel({
   onCreateProfile,
   onDeleteProfile,
   onRenameProfile,
+  onRedeemPromoCode,
   onSelectProfile,
   onTheme,
   onToggleBackendLedger,
@@ -841,6 +920,8 @@ function CashierPanel({
         onRenameProfile={onRenameProfile}
         onSelectProfile={onSelectProfile}
       />
+
+      <PromoCodePanel onRedeemPromoCode={onRedeemPromoCode} />
 
       <div className="mt-6 flex items-start justify-between gap-4 border-t border-white/10 pt-6">
         <div>
@@ -1049,6 +1130,61 @@ function ProfileManager({ store, profile, onCreateProfile, onDeleteProfile, onRe
   );
 }
 
+function PromoCodePanel({ onRedeemPromoCode }) {
+  const [code, setCode] = useState("");
+  const [status, setStatus] = useState(null);
+  const [isRedeeming, setIsRedeeming] = useState(false);
+
+  async function handleSubmit(event) {
+    event.preventDefault();
+    setIsRedeeming(true);
+    const result = await onRedeemPromoCode(code);
+    setStatus(result);
+    setIsRedeeming(false);
+    if (result.status === "redeemed") setCode("");
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="mt-6 border-t border-white/10 pt-6">
+      <label htmlFor="promo-code" className="text-sm font-bold uppercase tracking-[0.22em] text-slate-400">
+        Promo Code
+      </label>
+      <div className="mt-3 grid grid-cols-[1fr_auto] overflow-hidden rounded-lg border border-white/10 bg-black/30">
+        <input
+          id="promo-code"
+          type="text"
+          value={code}
+          onChange={(event) => {
+            setCode(event.target.value.toUpperCase());
+            setStatus(null);
+          }}
+          className="min-w-0 bg-transparent px-4 py-3 text-white outline-none"
+          autoComplete="off"
+          spellCheck="false"
+        />
+        <button
+          type="submit"
+          disabled={isRedeeming}
+          className="bg-yellow-300 px-4 py-3 font-black text-emerald-950 transition hover:bg-yellow-200"
+        >
+          {isRedeeming ? "Checking" : "Redeem"}
+        </button>
+      </div>
+      {status && (
+        <p
+          className={`mt-3 rounded-lg border p-3 text-sm leading-6 ${
+            status.status === "redeemed"
+              ? "border-yellow-300/30 bg-yellow-300/10 text-yellow-100"
+              : "border-red-300/25 bg-red-950/20 text-red-100"
+          }`}
+        >
+          {status.message}
+        </p>
+      )}
+    </form>
+  );
+}
+
 function PlayerHub({ profile, stats, leaderboard, leaderboardStatus, onClaimChallenge, onRefreshLeaderboard }) {
   return (
     <div className="mt-6 grid gap-4 xl:grid-cols-2">
@@ -1202,10 +1338,22 @@ function DailyChallenges({ profile, onClaimChallenge }) {
 
 function AchievementsPanel({ profile }) {
   const unlocked = new Set(profile.achievements);
+  const promoBadges = profile.promoBadges || [];
 
   return (
     <section className="rounded-lg border border-white/10 bg-white/[0.05] p-5">
       <h2 className="text-xl font-black text-white">Achievements</h2>
+      {promoBadges.length > 0 && (
+        <div className="mt-4 grid gap-2">
+          {promoBadges.map((badge) => (
+            <div key={badge.id} className={`rounded-lg border px-3 py-3 ${promoBadgeClass(badge.accent)}`}>
+              <div className="text-xs font-bold uppercase tracking-[0.18em] text-white/70">Exclusive Badge</div>
+              <div className="mt-1 font-black text-white">{badge.title}</div>
+              {badge.description && <div className="mt-1 text-sm text-slate-200">{badge.description}</div>}
+            </div>
+          ))}
+        </div>
+      )}
       <div className="mt-4 grid gap-2">
         {achievementDefinitions.map((achievement) => {
           const isUnlocked = unlocked.has(achievement.id);
@@ -1228,6 +1376,14 @@ function AchievementsPanel({ profile }) {
       </div>
     </section>
   );
+}
+
+function promoBadgeClass(accent) {
+  if (accent === "fuchsia") return "border-fuchsia-300/40 bg-fuchsia-400/10";
+  if (accent === "rose") return "border-rose-300/40 bg-rose-400/10";
+  if (accent === "cyan") return "border-cyan-300/40 bg-cyan-400/10";
+  if (accent === "emerald") return "border-emerald-300/40 bg-emerald-400/10";
+  return "border-yellow-300/40 bg-yellow-300/10";
 }
 
 function HistoryPanel({ history, compact = false }) {
