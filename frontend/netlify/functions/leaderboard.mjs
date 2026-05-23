@@ -11,18 +11,19 @@ const corsHeaders = {
   "Content-Type": "application/json",
 };
 
-export async function handler(event) {
-  if (event.httpMethod === "OPTIONS") {
+export default async function handler(request) {
+  if (request.method === "OPTIONS") {
     return response(204, {});
   }
 
   try {
-    if (event.httpMethod === "GET") {
+    if (request.method === "GET") {
       return response(200, { leaderboard: await readLeaderboard() });
     }
 
-    if (event.httpMethod === "POST") {
-      const entry = normalizeEntry(JSON.parse(event.body || "{}"));
+    if (request.method === "POST") {
+      const body = await request.text();
+      const entry = normalizeEntry(JSON.parse(body || "{}"));
       if (!entry) return response(400, { error: "Invalid leaderboard entry" });
 
       const leaderboard = await readLeaderboard();
@@ -109,9 +110,8 @@ function validDate(value) {
 }
 
 function response(statusCode, payload) {
-  return {
-    statusCode,
+  return new Response(statusCode === 204 ? null : JSON.stringify(payload), {
+    status: statusCode,
     headers: corsHeaders,
-    body: statusCode === 204 ? "" : JSON.stringify(payload),
-  };
+  });
 }
