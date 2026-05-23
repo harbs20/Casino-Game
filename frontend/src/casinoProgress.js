@@ -2,6 +2,11 @@ export const PROFILE_STORE_KEY = "casino-royale-store-v2";
 export const LEGACY_PROFILE_KEY = "casino-royale-profile-v1";
 export const MAX_HISTORY = 20;
 export const MAX_LEDGER = 80;
+export const STARTING_CHIPS = 1000;
+export const CASH_IN_LOW_CHIP_LIMIT = 100;
+export const CASH_IN_ROUND_COOLDOWN = 6;
+export const XP_BASE_REQUIREMENT = 1200;
+export const XP_LEVEL_STEP = 300;
 
 export const tableThemes = [
   { id: "classic", label: "Classic", unlockLevel: 1, accent: "emerald" },
@@ -90,8 +95,12 @@ export function createProfile(username = "Guest Player") {
     username,
     level: 1,
     xp: 0,
-    chips: 1000,
+    chips: STARTING_CHIPS,
+    redeemableChips: 0,
+    wageredChipsAtRisk: 0,
+    redeemableChipsAtRisk: 0,
     cashIns: 0,
+    nextCashInAtRound: 0,
     gamesPlayed: 0,
     biggestWin: 0,
     totalCashedOut: 0,
@@ -144,8 +153,12 @@ export function normalizeProfile(profile) {
     username: "Guest Player",
     level: 1,
     xp: 0,
-    chips: 1000,
+    chips: STARTING_CHIPS,
+    redeemableChips: 0,
+    wageredChipsAtRisk: 0,
+    redeemableChipsAtRisk: 0,
     cashIns: 0,
+    nextCashInAtRound: 0,
     gamesPlayed: 0,
     biggestWin: 0,
     totalCashedOut: 0,
@@ -163,6 +176,23 @@ export function normalizeProfile(profile) {
   nextProfile.history = Array.isArray(nextProfile.history) ? nextProfile.history.slice(0, MAX_HISTORY) : [];
   nextProfile.ledger = Array.isArray(nextProfile.ledger) ? nextProfile.ledger.slice(0, MAX_LEDGER) : [];
   nextProfile.achievements = Array.isArray(nextProfile.achievements) ? nextProfile.achievements : [];
+  nextProfile.level = Math.max(1, wholeChips(nextProfile.level, 1));
+  nextProfile.xp = wholeChips(nextProfile.xp, 0);
+  nextProfile.chips = wholeChips(nextProfile.chips, STARTING_CHIPS);
+  nextProfile.cashIns = wholeChips(nextProfile.cashIns, 0);
+  nextProfile.nextCashInAtRound = wholeChips(nextProfile.nextCashInAtRound, 0);
+  nextProfile.gamesPlayed = wholeChips(nextProfile.gamesPlayed, 0);
+  nextProfile.totalCashedOut = wholeChips(nextProfile.totalCashedOut, 0);
+  nextProfile.biggestWin = wholeChips(nextProfile.biggestWin, 0);
+  nextProfile.currentWinStreak = wholeChips(nextProfile.currentWinStreak, 0);
+  nextProfile.bestWinStreak = wholeChips(nextProfile.bestWinStreak, 0);
+  if (!Number.isFinite(Number(nextProfile.redeemableChips))) {
+    const legacyStats = calculateStats(nextProfile);
+    nextProfile.redeemableChips = Math.max(0, legacyStats.profit - nextProfile.totalCashedOut);
+  }
+  nextProfile.redeemableChips = clampChips(nextProfile.redeemableChips, 0, nextProfile.chips);
+  nextProfile.wageredChipsAtRisk = wholeChips(nextProfile.wageredChipsAtRisk, 0);
+  nextProfile.redeemableChipsAtRisk = clampChips(nextProfile.redeemableChipsAtRisk, 0, nextProfile.wageredChipsAtRisk);
   nextProfile.daily = normalizeDaily(nextProfile.daily);
   nextProfile.theme = getUnlockedThemes(nextProfile.level).some((theme) => theme.id === nextProfile.theme)
     ? nextProfile.theme
@@ -205,19 +235,22 @@ export function calculateStats(profile) {
   const stats = profile.history.reduce(
     (result, entry) => {
       const game = entry.game || "Unknown";
+      const wager = wholeChips(entry.wager, 0);
+      const payout = wholeChips(entry.payout, 0);
+      const profit = Number.isFinite(Number(entry.profit)) ? Math.trunc(Number(entry.profit)) : payout - wager;
       const byGame = result.byGame[game] || { rounds: 0, wins: 0, losses: 0, pushes: 0, wagered: 0, profit: 0 };
-      const won = entry.profit > 0;
-      const lost = entry.profit < 0;
-      const pushed = entry.profit === 0;
+      const won = profit > 0;
+      const lost = profit < 0;
+      const pushed = profit === 0;
 
       return {
         rounds: result.rounds + 1,
         wins: result.wins + (won ? 1 : 0),
         losses: result.losses + (lost ? 1 : 0),
         pushes: result.pushes + (pushed ? 1 : 0),
-        wagered: result.wagered + entry.wager,
-        payout: result.payout + entry.payout,
-        profit: result.profit + entry.profit,
+        wagered: result.wagered + wager,
+        payout: result.payout + payout,
+        profit: result.profit + profit,
         byGame: {
           ...result.byGame,
           [game]: {
@@ -225,8 +258,8 @@ export function calculateStats(profile) {
             wins: byGame.wins + (won ? 1 : 0),
             losses: byGame.losses + (lost ? 1 : 0),
             pushes: byGame.pushes + (pushed ? 1 : 0),
-            wagered: byGame.wagered + entry.wager,
-            profit: byGame.profit + entry.profit,
+            wagered: byGame.wagered + wager,
+            profit: byGame.profit + profit,
           },
         },
       };
@@ -246,6 +279,36 @@ export function getVipTier(level) {
 
 export function getUnlockedThemes(level) {
   return tableThemes.filter((theme) => level >= theme.unlockLevel);
+}
+
+export function getXpRequirement(level) {
+  return XP_BASE_REQUIREMENT + Math.max(0, wholeChips(level, 1) - 1) * XP_LEVEL_STEP;
+}
+
+export function getCashInAmount(profile) {
+  const level = wholeChips(profile?.level, 1);
+  const tier = getVipTier(level);
+  return 350 + level * 150 + Math.max(0, tier.level - 1) * 75;
+}
+
+export function getCashInEligibility(profile) {
+  const chips = wholeChips(profile?.chips, 0);
+  const gamesPlayed = wholeChips(profile?.gamesPlayed, 0);
+  const nextCashInAtRound = wholeChips(profile?.nextCashInAtRound, 0);
+  const bankrollLow = chips <= CASH_IN_LOW_CHIP_LIMIT;
+  const roundReady = chips === 0 || gamesPlayed >= nextCashInAtRound;
+
+  return {
+    canCashIn: bankrollLow && roundReady,
+    bankrollLow,
+    roundReady,
+    nextCashInAtRound,
+    roundsUntilCashIn: Math.max(0, nextCashInAtRound - gamesPlayed),
+  };
+}
+
+export function getCashOutAvailable(profile) {
+  return Math.min(wholeChips(profile?.chips, 0), wholeChips(profile?.redeemableChips, 0));
 }
 
 export function addLedgerEntry(profile, entry) {
@@ -340,4 +403,14 @@ export function unlockAchievements(profile) {
 export function makeId(prefix) {
   if (typeof crypto !== "undefined" && crypto.randomUUID) return `${prefix}-${crypto.randomUUID()}`;
   return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function wholeChips(value, fallback = 0) {
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) return fallback;
+  return Math.max(0, Math.floor(amount));
+}
+
+function clampChips(value, minimum, maximum) {
+  return Math.min(Math.max(wholeChips(value, minimum), minimum), maximum);
 }

@@ -17,9 +17,12 @@ const ranks = [
   { rank: "Q", value: 10 },
   { rank: "K", value: 10 },
 ];
+const DECK_COUNT = 6;
 
 function createDeck() {
-  return suits.flatMap((suit) => ranks.map((rank) => ({ ...rank, suit })));
+  return Array.from({ length: DECK_COUNT }).flatMap(() =>
+    suits.flatMap((suit) => ranks.map((rank) => ({ ...rank, suit })))
+  );
 }
 
 function shuffle(deck) {
@@ -59,7 +62,7 @@ function resultToneFor(payout, wager) {
 
 function pairSidePayout(hand, wager) {
   if (wager <= 0 || hand.length < 2 || hand[0].rank !== hand[1].rank) return 0;
-  return hand[0].suit === hand[1].suit ? wager * 26 : wager * 12;
+  return hand[0].suit === hand[1].suit ? wager * 21 : wager * 11;
 }
 
 function pairSideMessage(hand, wager, payout) {
@@ -304,7 +307,7 @@ export default function Blackjack({ wallet }) {
           />
         </div>
         <p className="mt-2 text-xs leading-5 text-slate-400">
-          Pair pays 11:1. Suited pair pays 25:1.
+          Pair pays 10:1. Suited pair pays 20:1.
         </p>
 
         <button

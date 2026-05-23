@@ -4,9 +4,10 @@ Casino Royale is a browser-based casino prototype built with React and Vite. It 
 
 ## Current Features
 
-- Level-based cashier: cash in chips based on player level, then cash chips out for XP.
+- Limited rescue cashier: cash in only when your bankroll is low, then convert net redeemable winnings into XP.
 - Multiple local save slots through `localStorage`.
 - Game history, stats dashboard, achievements, daily challenges, and claimable rewards.
+- Global leaderboard for deployed Netlify sites, backed by a serverless function and Netlify Blobs.
 - VIP tiers with unlockable table themes.
 - Optional sound effects and chip movement animations.
 - Blackjack with hit, stand, double down, blackjack payouts, pushes, bust handling, and pair side bets.
@@ -67,6 +68,20 @@ Run lint checks:
 cd frontend
 npm run lint
 ```
+
+## Netlify Deploy
+
+This repo includes a root `netlify.toml` for the Vite frontend:
+
+- Base directory: `frontend`
+- Build command: `npm run build`
+- Publish directory: `dist`
+- Functions directory: `netlify/functions`
+- Node version: `22`
+
+The global leaderboard uses `frontend/netlify/functions/leaderboard.mjs` and Netlify Blobs. The optional backend ledger server is local-only for now. The Netlify deploy runs as a frontend app with local profile saves in the browser and shared leaderboard scores on Netlify.
+
+To sync ledger entries to a deployed backend later, add a `VITE_LEDGER_API_URL` environment variable in Netlify that points to the backend origin.
 
 Run the backend ledger server:
 

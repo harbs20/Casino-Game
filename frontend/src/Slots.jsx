@@ -2,11 +2,11 @@ import { useState } from "react";
 import ResultBurst from "./ResultBurst";
 
 const symbols = [
-  { id: "seven", icon: "7", label: "Lucky Seven", multiplier: 20 },
-  { id: "diamond", icon: "◆", label: "Diamond", multiplier: 12 },
-  { id: "bell", icon: "BELL", label: "Bell", multiplier: 8 },
-  { id: "cherry", icon: "CH", label: "Cherry", multiplier: 5 },
-  { id: "bar", icon: "BAR", label: "Bar", multiplier: 3 },
+  { id: "seven", icon: "7", label: "Lucky Seven", multiplier: 12, weight: 1 },
+  { id: "diamond", icon: "◆", label: "Diamond", multiplier: 8, weight: 2 },
+  { id: "bell", icon: "BELL", label: "Bell", multiplier: 5, weight: 3 },
+  { id: "cherry", icon: "CH", label: "Cherry", multiplier: 3, weight: 4 },
+  { id: "bar", icon: "BAR", label: "Bar", multiplier: 2, weight: 5 },
 ];
 
 const lines = [
@@ -18,7 +18,13 @@ const lines = [
 ];
 
 function randomSymbol() {
-  return symbols[Math.floor(Math.random() * symbols.length)];
+  const totalWeight = symbols.reduce((sum, symbol) => sum + symbol.weight, 0);
+  let roll = Math.random() * totalWeight;
+  for (const symbol of symbols) {
+    roll -= symbol.weight;
+    if (roll <= 0) return symbol;
+  }
+  return symbols[symbols.length - 1];
 }
 
 function makeGrid() {
@@ -51,8 +57,8 @@ function scoreSpin(grid, bet) {
 function bonusPayout(grid, bet) {
   if (bet <= 0) return 0;
   const sevens = grid.filter((symbol) => symbol.id === "seven").length;
-  if (sevens >= 2) return bet * 8;
-  if (sevens === 1) return bet * 3;
+  if (sevens >= 2) return bet * 4;
+  if (sevens === 1) return bet;
   return 0;
 }
 
@@ -154,7 +160,7 @@ export default function Slots({ wallet }) {
           className="mt-3 w-full rounded-lg border border-white/10 bg-black/30 px-4 py-3 text-white outline-none"
         />
         <p className="mt-2 text-xs leading-5 text-slate-400">
-          Any 7 pays 2:1. Two or more 7s pay 7:1.
+          One 7 returns the bonus bet. Two or more 7s pay 3:1.
         </p>
         <button
           type="button"

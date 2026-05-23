@@ -8,10 +8,16 @@ import {
   addHistoryEntry,
   addLedgerEntry,
   calculateStats,
+  CASH_IN_LOW_CHIP_LIMIT,
+  CASH_IN_ROUND_COOLDOWN,
   claimDailyChallenge,
   createProfile,
   dailyChallengeTemplates,
+  getCashInAmount,
+  getCashInEligibility,
+  getCashOutAvailable,
   getUnlockedThemes,
+  getXpRequirement,
   getVipTier,
   loadCasinoStore,
   makeId,
@@ -60,6 +66,13 @@ const games = [
     component: Baccarat,
   },
 ];
+const LEDGER_API_URL = normalizeApiUrl(
+  import.meta.env.VITE_LEDGER_API_URL || (import.meta.env.DEV ? "http://127.0.0.1:8787" : "")
+);
+const LEADERBOARD_API_ORIGIN = normalizeApiUrl(import.meta.env.VITE_LEADERBOARD_API_URL || "");
+const LEADERBOARD_ENDPOINT = `${LEADERBOARD_API_ORIGIN}/.netlify/functions/leaderboard`;
+const LEADERBOARD_CACHE_KEY = "casino-royale-leaderboard-cache-v1";
+const MAX_LEADERBOARD_ENTRIES = 25;
 
 function formatChips(value) {
   return new Intl.NumberFormat("en-US").format(value);
@@ -89,35 +102,133 @@ function cleanSignedAmount(value, fallback = 0) {
   return Math.trunc(amount);
 }
 
+function normalizeApiUrl(value) {
+  return String(value || "").trim().replace(/\/$/, "");
+}
+
 function syncLedgerEntry(entry) {
-  fetch("http://127.0.0.1:8787/ledger", {
+  if (!LEDGER_API_URL) return;
+
+  fetch(`${LEDGER_API_URL}/ledger`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(entry),
   }).catch(() => {});
 }
 
+function makeLeaderboardEntry(profile, stats) {
+  return {
+    profileId: profile.id,
+    username: profile.username,
+    level: profile.level,
+    xp: profile.xp,
+    chips: profile.chips,
+    totalCashedOut: profile.totalCashedOut,
+    gamesPlayed: profile.gamesPlayed,
+    biggestWin: profile.biggestWin,
+    netProfit: stats.profit,
+    winRate: stats.winRate,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function rankLeaderboard(entries) {
+  return entries
+    .filter(Boolean)
+    .sort((first, second) => {
+      if (second.totalCashedOut !== first.totalCashedOut) return second.totalCashedOut - first.totalCashedOut;
+      if (second.level !== first.level) return second.level - first.level;
+      if (second.netProfit !== first.netProfit) return second.netProfit - first.netProfit;
+      if (second.chips !== first.chips) return second.chips - first.chips;
+      return new Date(second.updatedAt).getTime() - new Date(first.updatedAt).getTime();
+    })
+    .slice(0, MAX_LEADERBOARD_ENTRIES)
+    .map((entry, index) => ({ ...entry, rank: index + 1 }));
+}
+
+function readCachedLeaderboard() {
+  try {
+    const cached = JSON.parse(localStorage.getItem(LEADERBOARD_CACHE_KEY) || "[]");
+    return rankLeaderboard(Array.isArray(cached) ? cached : []);
+  } catch {
+    return [];
+  }
+}
+
+function cacheLeaderboard(entries) {
+  const leaderboard = rankLeaderboard(entries);
+  localStorage.setItem(LEADERBOARD_CACHE_KEY, JSON.stringify(leaderboard));
+  return leaderboard;
+}
+
+function cacheLocalScore(entry) {
+  const cached = readCachedLeaderboard().filter((item) => item.profileId !== entry.profileId);
+  return cacheLeaderboard([entry, ...cached]);
+}
+
 export default function App() {
   const [store, setStore] = useState(loadCasinoStore);
   const [screen, setScreen] = useState("lobby");
   const [cashOutAmount, setCashOutAmount] = useState(250);
-  const [notice, setNotice] = useState("Cash in chips, play the tables, then cash out chips for XP.");
+  const [notice, setNotice] = useState("Play the tables, then convert net redeemable winnings into XP.");
   const [chipBurst, setChipBurst] = useState(null);
+  const [leaderboard, setLeaderboard] = useState(readCachedLeaderboard);
+  const [leaderboardStatus, setLeaderboardStatus] = useState("loading");
   const syncedLedgerId = useRef(null);
 
   const profile = store.profiles.find((item) => item.id === store.activeProfileId) || store.profiles[0];
   const activeGame = games.find((game) => game.id === screen);
   const ActiveGame = activeGame?.component;
   const vipTier = getVipTier(profile.level);
-  const vipBonus = Math.max(0, vipTier.level - 1) * 100;
-  const cashInAmount = profile.level * 500 + vipBonus;
-  const xpPercent = Math.min(100, (profile.xp / 1000) * 100);
+  const cashInAmount = getCashInAmount(profile);
+  const cashInEligibility = getCashInEligibility(profile);
+  const cashOutAvailable = getCashOutAvailable(profile);
+  const xpRequirement = getXpRequirement(profile.level);
+  const xpPercent = Math.min(100, (profile.xp / xpRequirement) * 100);
   const stats = calculateStats(profile);
   const unlockedThemes = getUnlockedThemes(profile.level);
+  const leaderboardProfileId = profile.id;
+  const leaderboardUsername = profile.username;
+  const leaderboardLevel = profile.level;
+  const leaderboardXp = profile.xp;
+  const leaderboardChips = profile.chips;
+  const leaderboardTotalCashedOut = profile.totalCashedOut;
+  const leaderboardGamesPlayed = profile.gamesPlayed;
+  const leaderboardBiggestWin = profile.biggestWin;
+  const leaderboardNetProfit = stats.profit;
+  const leaderboardWinRate = stats.winRate;
 
   useEffect(() => {
     localStorage.setItem(PROFILE_STORE_KEY, JSON.stringify(normalizeStore(store)));
   }, [store]);
+
+  useEffect(() => {
+    let ignore = false;
+
+    async function loadLeaderboard() {
+      try {
+        const response = await fetch(LEADERBOARD_ENDPOINT);
+        if (!response.ok) throw new Error("Leaderboard unavailable");
+        const data = await response.json();
+        const nextLeaderboard = cacheLeaderboard(data.leaderboard || []);
+        if (!ignore) {
+          setLeaderboard(nextLeaderboard);
+          setLeaderboardStatus("online");
+        }
+      } catch {
+        const cached = readCachedLeaderboard();
+        if (!ignore) {
+          setLeaderboard(cached);
+          setLeaderboardStatus(cached.length > 0 ? "local" : "offline");
+        }
+      }
+    }
+
+    loadLeaderboard();
+    return () => {
+      ignore = true;
+    };
+  }, []);
 
   useEffect(() => {
     const latestLedgerEntry = profile.ledger[0];
@@ -129,6 +240,53 @@ export default function App() {
       username: profile.username,
     });
   }, [profile.backendLedgerEnabled, profile.id, profile.ledger, profile.username]);
+
+  useEffect(() => {
+    if (leaderboardGamesPlayed <= 0 && leaderboardTotalCashedOut <= 0) return undefined;
+
+    const entry = {
+      profileId: leaderboardProfileId,
+      username: leaderboardUsername,
+      level: leaderboardLevel,
+      xp: leaderboardXp,
+      chips: leaderboardChips,
+      totalCashedOut: leaderboardTotalCashedOut,
+      gamesPlayed: leaderboardGamesPlayed,
+      biggestWin: leaderboardBiggestWin,
+      netProfit: leaderboardNetProfit,
+      winRate: leaderboardWinRate,
+      updatedAt: new Date().toISOString(),
+    };
+    const timeout = window.setTimeout(async () => {
+      try {
+        const response = await fetch(LEADERBOARD_ENDPOINT, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(entry),
+        });
+        if (!response.ok) throw new Error("Leaderboard unavailable");
+        const data = await response.json();
+        setLeaderboard(cacheLeaderboard(data.leaderboard || []));
+        setLeaderboardStatus("online");
+      } catch {
+        setLeaderboard(cacheLocalScore(entry));
+        setLeaderboardStatus("local");
+      }
+    }, 900);
+
+    return () => window.clearTimeout(timeout);
+  }, [
+    leaderboardBiggestWin,
+    leaderboardChips,
+    leaderboardGamesPlayed,
+    leaderboardLevel,
+    leaderboardNetProfit,
+    leaderboardProfileId,
+    leaderboardTotalCashedOut,
+    leaderboardUsername,
+    leaderboardWinRate,
+    leaderboardXp,
+  ]);
 
   function updateActiveProfile(updater) {
     setStore((current) => {
@@ -180,19 +338,31 @@ export default function App() {
   }
 
   function cashIn() {
-    playSound("cash");
     updateActiveProfile((current) => {
+      const eligibility = getCashInEligibility(current);
+      if (!eligibility.canCashIn) {
+        if (!eligibility.bankrollLow) {
+          setNotice(`Rescue cash-in opens when your wallet is at ${formatChips(CASH_IN_LOW_CHIP_LIMIT)} chips or less.`);
+        } else {
+          setNotice(`Play ${eligibility.roundsUntilCashIn} more round${eligibility.roundsUntilCashIn === 1 ? "" : "s"} before another rescue cash-in.`);
+        }
+        return current;
+      }
+
+      playSound("cash");
       const currentTier = getVipTier(current.level);
-      const amount = current.level * 500 + Math.max(0, currentTier.level - 1) * 100;
+      const amount = getCashInAmount(current);
+      const nextChips = current.chips + amount;
       const ledgerResult = addLedgerEntry(
         {
           ...current,
-          chips: current.chips + amount,
+          chips: nextChips,
           cashIns: current.cashIns + 1,
+          nextCashInAtRound: current.gamesPlayed + CASH_IN_ROUND_COOLDOWN,
         },
-        { type: "cash-in", amount, balanceAfter: current.chips + amount }
+        { type: "cash-in", amount, balanceAfter: nextChips }
       );
-      setNotice(`Cashier issued ${formatChips(amount)} chips for Level ${current.level} ${currentTier.label}.`);
+      setNotice(`Cashier issued a ${formatChips(amount)} chip rescue buy-in for Level ${current.level} ${currentTier.label}.`);
       showChipBurst("win", amount);
       return ledgerResult.profile;
     });
@@ -201,19 +371,29 @@ export default function App() {
   function cashOut() {
     let playedSound = false;
     updateActiveProfile((current) => {
-      const amount = Math.min(cleanAmount(cashOutAmount), current.chips);
+      const available = getCashOutAvailable(current);
+      const requestedAmount = cleanAmount(cashOutAmount);
+      const amount = Math.min(requestedAmount, available);
       if (amount <= 0) {
-        setNotice("Choose how many chips you want to cash out first.");
+        setNotice("Only net table winnings can be converted to XP. Win a round first, then cash out the redeemable chips.");
         return current;
       }
 
-      const nextTotalXp = current.xp + amount;
-      const levelsGained = Math.floor(nextTotalXp / 1000);
+      let nextXp = current.xp + amount;
+      let nextLevel = current.level;
+      let levelsGained = 0;
+      while (nextXp >= getXpRequirement(nextLevel)) {
+        nextXp -= getXpRequirement(nextLevel);
+        nextLevel += 1;
+        levelsGained += 1;
+      }
+
       const cashedOut = {
         ...current,
         chips: current.chips - amount,
-        xp: nextTotalXp % 1000,
-        level: current.level + levelsGained,
+        redeemableChips: Math.max(0, current.redeemableChips - amount),
+        xp: nextXp,
+        level: nextLevel,
         totalCashedOut: current.totalCashedOut + amount,
       };
       const dailyProgress = updateDailyProgress(cashedOut, { type: "cashout", amount });
@@ -231,8 +411,8 @@ export default function App() {
           : "";
       setNotice(
         levelsGained > 0
-          ? `Cashed out ${formatChips(amount)} chips. Level ${current.level + levelsGained} unlocked.${unlockText}`
-          : `Cashed out ${formatChips(amount)} chips for ${formatChips(amount)} XP.${unlockText}`
+          ? `Cashed out ${formatChips(amount)} redeemable chips. Level ${nextLevel} unlocked.${unlockText}`
+          : `Cashed out ${formatChips(amount)} redeemable chips for ${formatChips(amount)} XP.${unlockText}`
       );
       showChipBurst("loss", amount);
       if (!playedSound) {
@@ -261,8 +441,16 @@ export default function App() {
         return current;
       }
 
+      const nonRedeemableChips = Math.max(0, current.chips - current.redeemableChips);
+      const redeemableSpent = Math.max(0, wager - nonRedeemableChips);
       const ledgerResult = addLedgerEntry(
-        { ...current, chips: current.chips - wager },
+        {
+          ...current,
+          chips: current.chips - wager,
+          redeemableChips: Math.max(0, current.redeemableChips - redeemableSpent),
+          wageredChipsAtRisk: current.wageredChipsAtRisk + wager,
+          redeemableChipsAtRisk: current.redeemableChipsAtRisk + redeemableSpent,
+        },
         {
           type: "wager",
           game: detail.game || "Table",
@@ -286,10 +474,21 @@ export default function App() {
     let cue = profit > 0 ? "win" : "loss";
 
     updateActiveProfile((current) => {
+      const pendingWager = Math.min(wager, current.wageredChipsAtRisk);
+      const pendingRedeemable = Math.min(pendingWager, current.redeemableChipsAtRisk);
+      const redeemableReturn =
+        pendingWager > 0
+          ? Math.min(safePayout, pendingRedeemable + Math.max(0, safePayout - pendingWager))
+          : Math.max(0, profit);
+      const nextChips = current.chips + safePayout;
+      const nextRedeemableChips = Math.min(nextChips, current.redeemableChips + redeemableReturn);
       const historyProfile = addHistoryEntry(
         {
           ...current,
-          chips: current.chips + safePayout,
+          chips: nextChips,
+          redeemableChips: nextRedeemableChips,
+          wageredChipsAtRisk: Math.max(0, current.wageredChipsAtRisk - pendingWager),
+          redeemableChipsAtRisk: Math.max(0, current.redeemableChipsAtRisk - pendingRedeemable),
           gamesPlayed: current.gamesPlayed + 1,
           biggestWin: Math.max(current.biggestWin, profit),
           currentWinStreak: profit > 0 ? current.currentWinStreak + 1 : 0,
@@ -387,7 +586,28 @@ export default function App() {
   }
 
   function toggleBackendLedger() {
-    updateActiveProfile((current) => ({ ...current, backendLedgerEnabled: !current.backendLedgerEnabled }));
+    updateActiveProfile((current) => {
+      if (!current.backendLedgerEnabled && !LEDGER_API_URL) {
+        setNotice("Ledger sync needs VITE_LEDGER_API_URL in this deploy. The local ledger is still recording.");
+        return current;
+      }
+      return { ...current, backendLedgerEnabled: !current.backendLedgerEnabled };
+    });
+  }
+
+  async function refreshLeaderboard() {
+    setLeaderboardStatus("syncing");
+    try {
+      const response = await fetch(LEADERBOARD_ENDPOINT);
+      if (!response.ok) throw new Error("Leaderboard unavailable");
+      const data = await response.json();
+      setLeaderboard(cacheLeaderboard(data.leaderboard || []));
+      setLeaderboardStatus("online");
+    } catch {
+      const entry = makeLeaderboardEntry(profile, stats);
+      setLeaderboard(cacheLocalScore(entry));
+      setLeaderboardStatus("local");
+    }
   }
 
   const wallet = {
@@ -405,6 +625,7 @@ export default function App() {
         <Header
           profile={profile}
           vipTier={vipTier}
+          xpRequirement={xpRequirement}
           xpPercent={xpPercent}
           onLobby={() => setScreen("lobby")}
           onToggleSound={toggleSound}
@@ -432,7 +653,10 @@ export default function App() {
               <PlayerHub
                 profile={profile}
                 stats={stats}
+                leaderboard={leaderboard}
+                leaderboardStatus={leaderboardStatus}
                 onClaimChallenge={claimChallenge}
+                onRefreshLeaderboard={refreshLeaderboard}
               />
             </section>
 
@@ -441,7 +665,10 @@ export default function App() {
               profile={profile}
               notice={notice}
               cashInAmount={cashInAmount}
+              cashInEligibility={cashInEligibility}
               cashOutAmount={cashOutAmount}
+              cashOutAvailable={cashOutAvailable}
+              xpRequirement={xpRequirement}
               xpPercent={xpPercent}
               vipTier={vipTier}
               unlockedThemes={unlockedThemes}
@@ -488,7 +715,7 @@ export default function App() {
   );
 }
 
-function Header({ profile, vipTier, xpPercent, onLobby, onToggleSound }) {
+function Header({ profile, vipTier, xpRequirement, xpPercent, onLobby, onToggleSound }) {
   return (
     <header className="flex flex-col gap-4 border-b border-white/10 pb-4 sm:flex-row sm:items-center sm:justify-between">
       <button type="button" onClick={onLobby} className="flex items-center gap-3 text-left">
@@ -509,7 +736,7 @@ function Header({ profile, vipTier, xpPercent, onLobby, onToggleSound }) {
         <div className="min-w-52 rounded-lg border border-white/10 bg-white/[0.06] px-4 py-3">
           <div className="flex justify-between text-xs uppercase tracking-[0.22em] text-slate-400">
             <span>XP</span>
-            <span>{profile.xp}/1000</span>
+            <span>{profile.xp}/{formatChips(xpRequirement)}</span>
           </div>
           <div className="mt-2 h-2 overflow-hidden rounded-full bg-black/40">
             <div
@@ -574,7 +801,10 @@ function CashierPanel({
   profile,
   notice,
   cashInAmount,
+  cashInEligibility,
   cashOutAmount,
+  cashOutAvailable,
+  xpRequirement,
   xpPercent,
   vipTier,
   unlockedThemes,
@@ -589,10 +819,15 @@ function CashierPanel({
   onToggleBackendLedger,
   onToggleSound,
 }) {
+  const cashInStatus = cashInEligibility.canCashIn
+    ? "Rescue available"
+    : cashInEligibility.bankrollLow
+      ? `${cashInEligibility.roundsUntilCashIn} rounds left`
+      : `At ${formatChips(CASH_IN_LOW_CHIP_LIMIT)} chips`;
   const quickAmounts = [
-    { label: "25%", value: Math.floor(profile.chips * 0.25) },
-    { label: "50%", value: Math.floor(profile.chips * 0.5) },
-    { label: "Max", value: profile.chips },
+    { label: "25%", value: Math.floor(cashOutAvailable * 0.25) },
+    { label: "50%", value: Math.floor(cashOutAvailable * 0.5) },
+    { label: "Max", value: cashOutAvailable },
   ];
 
   return (
@@ -613,7 +848,7 @@ function CashierPanel({
           <p className="mt-1 text-sm text-slate-400">{vipTier.label}: {vipTier.perk}</p>
         </div>
         <div className="rounded-lg bg-yellow-300 px-3 py-2 text-right text-emerald-950">
-          <div className="text-xs font-bold uppercase">Cash In</div>
+          <div className="text-xs font-bold uppercase">{cashInStatus}</div>
           <div className="text-lg font-black">+{formatChips(cashInAmount)}</div>
         </div>
       </div>
@@ -621,9 +856,10 @@ function CashierPanel({
       <button
         type="button"
         onClick={onCashIn}
+        disabled={!cashInEligibility.canCashIn}
         className="mt-5 w-full rounded-lg bg-gradient-to-r from-yellow-300 to-amber-500 px-4 py-3 font-black text-emerald-950 shadow-lg shadow-yellow-500/20 transition hover:brightness-110"
       >
-        Cash In Level {profile.level} Chips
+        Rescue Cash In
       </button>
 
       <div className="mt-6 border-t border-white/10 pt-6">
@@ -635,9 +871,9 @@ function CashierPanel({
             id="cash-out"
             type="number"
             min="0"
-            max={profile.chips}
+            max={cashOutAvailable}
             value={cashOutAmount}
-            onChange={(event) => onCashOutAmount(cleanAmount(event.target.value))}
+            onChange={(event) => onCashOutAmount(Math.min(cleanAmount(event.target.value), cashOutAvailable))}
             className="min-w-0 flex-1 bg-transparent px-4 py-3 text-white outline-none"
           />
           <button
@@ -654,6 +890,7 @@ function CashierPanel({
               key={item.label}
               type="button"
               onClick={() => onCashOutAmount(item.value)}
+              disabled={cashOutAvailable <= 0}
               className="rounded-lg border border-white/10 px-3 py-2 text-sm font-bold text-slate-200 transition hover:border-emerald-300 hover:text-emerald-200"
             >
               {item.label}
@@ -665,7 +902,7 @@ function CashierPanel({
       <div className="mt-6 rounded-lg border border-white/10 bg-black/25 p-4">
         <div className="flex justify-between text-sm text-slate-300">
           <span>Level progress</span>
-          <span>{profile.xp}/1000 XP</span>
+          <span>{profile.xp}/{formatChips(xpRequirement)} XP</span>
         </div>
         <div className="mt-3 h-2 overflow-hidden rounded-full bg-black/50">
           <div
@@ -718,6 +955,7 @@ function CashierPanel({
       <dl className="mt-5 grid grid-cols-2 gap-3 text-sm">
         <SummaryItem label="Games" value={profile.gamesPlayed} />
         <SummaryItem label="Cash Ins" value={profile.cashIns} />
+        <SummaryItem label="Cashable" value={formatChips(cashOutAvailable)} />
         <SummaryItem label="Best Win" value={formatChips(profile.biggestWin)} />
         <SummaryItem label="XP Banked" value={formatChips(profile.totalCashedOut)} />
       </dl>
@@ -727,6 +965,17 @@ function CashierPanel({
 
 function ProfileManager({ store, profile, onCreateProfile, onDeleteProfile, onRenameProfile, onSelectProfile }) {
   const [name, setName] = useState(profile.username);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+
+  function handleDeleteClick() {
+    if (!confirmDelete) {
+      setConfirmDelete(true);
+      return;
+    }
+
+    setConfirmDelete(false);
+    onDeleteProfile();
+  }
 
   return (
     <div>
@@ -760,7 +1009,10 @@ function ProfileManager({ store, profile, onCreateProfile, onDeleteProfile, onRe
         <input
           type="text"
           value={name}
-          onChange={(event) => setName(event.target.value)}
+          onChange={(event) => {
+            setName(event.target.value);
+            setConfirmDelete(false);
+          }}
           className="min-w-0 rounded-lg border border-white/10 bg-black/30 px-4 py-3 text-white outline-none"
           aria-label="Profile name"
         />
@@ -775,23 +1027,99 @@ function ProfileManager({ store, profile, onCreateProfile, onDeleteProfile, onRe
 
       <button
         type="button"
-        onClick={onDeleteProfile}
-        className="mt-3 w-full rounded-lg border border-white/10 px-4 py-2 text-sm font-bold text-slate-300 transition hover:border-red-300 hover:text-red-200"
+        onClick={handleDeleteClick}
+        className={`mt-3 w-full rounded-lg border px-4 py-2 text-sm font-bold transition ${
+          confirmDelete
+            ? "border-red-300 bg-red-500/15 text-red-100 hover:bg-red-500/25"
+            : "border-white/10 text-slate-300 hover:border-red-300 hover:text-red-200"
+        }`}
       >
-        Delete Current Slot
+        {confirmDelete ? "Confirm Delete Save" : "Delete Current Slot"}
       </button>
+      {confirmDelete && (
+        <button
+          type="button"
+          onClick={() => setConfirmDelete(false)}
+          className="mt-2 w-full rounded-lg border border-white/10 px-4 py-2 text-sm font-bold text-slate-300 transition hover:border-slate-300 hover:text-white"
+        >
+          Cancel
+        </button>
+      )}
     </div>
   );
 }
 
-function PlayerHub({ profile, stats, onClaimChallenge }) {
+function PlayerHub({ profile, stats, leaderboard, leaderboardStatus, onClaimChallenge, onRefreshLeaderboard }) {
   return (
     <div className="mt-6 grid gap-4 xl:grid-cols-2">
       <StatsDashboard stats={stats} profile={profile} />
+      <LeaderboardPanel
+        leaderboard={leaderboard}
+        profileId={profile.id}
+        status={leaderboardStatus}
+        onRefresh={onRefreshLeaderboard}
+      />
       <DailyChallenges profile={profile} onClaimChallenge={onClaimChallenge} />
       <AchievementsPanel profile={profile} />
       <HistoryPanel history={profile.history} />
     </div>
+  );
+}
+
+function LeaderboardPanel({ leaderboard, profileId, status, onRefresh }) {
+  const statusLabel =
+    status === "online" ? "Global" : status === "syncing" || status === "loading" ? "Syncing" : "Local";
+
+  return (
+    <section className="rounded-lg border border-white/10 bg-white/[0.05] p-5">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <h2 className="text-xl font-black text-white">Global Leaderboard</h2>
+          <div className="mt-1 text-xs uppercase tracking-[0.18em] text-slate-400">{statusLabel}</div>
+        </div>
+        <button
+          type="button"
+          onClick={onRefresh}
+          className="rounded-lg border border-white/10 px-3 py-2 text-sm font-bold text-slate-200 transition hover:border-yellow-300 hover:text-yellow-200"
+        >
+          Refresh
+        </button>
+      </div>
+      <div className="mt-4 grid gap-2">
+        {leaderboard.length === 0 ? (
+          <div className="rounded-lg border border-dashed border-white/15 px-4 py-4 text-sm text-slate-400">
+            No leaderboard scores yet.
+          </div>
+        ) : (
+          leaderboard.slice(0, 10).map((entry) => (
+            <div
+              key={entry.profileId}
+              className={`grid grid-cols-[auto_1fr_auto] items-center gap-3 rounded-lg border px-3 py-3 text-sm ${
+                entry.profileId === profileId
+                  ? "border-yellow-300/40 bg-yellow-300/10"
+                  : "border-white/10 bg-black/20"
+              }`}
+            >
+              <span className="grid h-8 w-8 place-items-center rounded-lg bg-black/30 font-black text-yellow-200">
+                {entry.rank}
+              </span>
+              <span className="min-w-0">
+                <span className="block truncate font-black text-white">{entry.username}</span>
+                <span className="mt-1 block text-xs uppercase tracking-[0.16em] text-slate-400">
+                  L{entry.level} · {formatChips(entry.gamesPlayed)} rounds · {entry.winRate}%
+                </span>
+              </span>
+              <span className="text-right">
+                <span className="block font-black text-emerald-200">{formatChips(entry.totalCashedOut)}</span>
+                <span className={entry.netProfit >= 0 ? "mt-1 block text-xs text-emerald-200" : "mt-1 block text-xs text-red-200"}>
+                  {formatSigned(entry.netProfit)}
+                </span>
+              </span>
+            </div>
+          ))
+        )}
+      </div>
+    </section>
   );
 }
 
