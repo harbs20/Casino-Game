@@ -32,13 +32,14 @@ src/
   index.css        Global styles, table animations, card dealing, reels, wheel
 netlify/functions/
   leaderboard.mjs  Global leaderboard endpoint
+  promo-code.mjs   Promo code badge redemption endpoint
 ```
 
 ## Game State
 
 The profile store is saved in `localStorage` under `casino-royale-store-v2`. Older `casino-royale-profile-v1` saves are migrated automatically.
 
-Each profile tracks chips, redeemable winnings, XP, level, rescue cash-ins, games played, best win, win streaks, total chips cashed out, game history, ledger entries, achievements, daily challenges, sound preference, backend ledger sync preference, and selected VIP theme.
+Each profile tracks chips, redeemable winnings, XP, level, rescue cash-ins, games played, best win, win streaks, total chips cashed out, game history, ledger entries, achievements, promo badges, daily challenges, sound preference, backend ledger sync preference, and selected VIP theme.
 
 The wallet API is created in `App.jsx` and passed into each game:
 
@@ -79,6 +80,27 @@ The frontend always records a local ledger. In local development, `Ledger Sync` 
 ## Global Leaderboard
 
 The Netlify deploy exposes `/.netlify/functions/leaderboard`, backed by Netlify Blobs through `@netlify/blobs`. The lobby posts profile snapshots after play and ranks players by total XP banked, then level, net profit, and chips. Local Vite development falls back to a browser-cached leaderboard unless you run the site with Netlify Dev.
+
+## Promo Codes
+
+The Netlify deploy exposes `/.netlify/functions/promo-code`. Promo codes return badge definitions to the frontend, and each local profile records redeemed codes so the same save cannot redeem a code twice.
+
+Set `PROMO_CODES_JSON` in Netlify to define private codes:
+
+```json
+[
+  {
+    "code": "YOUR-CODE",
+    "badge": {
+      "id": "your-badge",
+      "title": "Your Badge",
+      "description": "Exclusive promo badge.",
+      "accent": "yellow"
+    },
+    "rewardChips": 0
+  }
+]
+```
 
 ## Animation Notes
 

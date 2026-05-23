@@ -2,6 +2,8 @@ export const PROFILE_STORE_KEY = "casino-royale-store-v2";
 export const LEGACY_PROFILE_KEY = "casino-royale-profile-v1";
 export const MAX_HISTORY = 20;
 export const MAX_LEDGER = 80;
+export const MAX_PROMO_BADGES = 24;
+export const MAX_REDEEMED_PROMO_CODES = 80;
 export const STARTING_CHIPS = 1000;
 export const CASH_IN_LOW_CHIP_LIMIT = 100;
 export const CASH_IN_ROUND_COOLDOWN = 6;
@@ -109,6 +111,8 @@ export function createProfile(username = "Guest Player") {
     history: [],
     ledger: [],
     achievements: [],
+    promoBadges: [],
+    redeemedPromoCodes: [],
     daily: makeDailyChallenges(todayKey()),
     soundEnabled: false,
     backendLedgerEnabled: false,
@@ -167,6 +171,8 @@ export function normalizeProfile(profile) {
     history: [],
     ledger: [],
     achievements: [],
+    promoBadges: [],
+    redeemedPromoCodes: [],
     daily: makeDailyChallenges(todayKey()),
     soundEnabled: false,
     backendLedgerEnabled: false,
@@ -176,6 +182,12 @@ export function normalizeProfile(profile) {
   nextProfile.history = Array.isArray(nextProfile.history) ? nextProfile.history.slice(0, MAX_HISTORY) : [];
   nextProfile.ledger = Array.isArray(nextProfile.ledger) ? nextProfile.ledger.slice(0, MAX_LEDGER) : [];
   nextProfile.achievements = Array.isArray(nextProfile.achievements) ? nextProfile.achievements : [];
+  nextProfile.promoBadges = Array.isArray(nextProfile.promoBadges)
+    ? nextProfile.promoBadges.map(normalizePromoBadge).filter(Boolean).slice(0, MAX_PROMO_BADGES)
+    : [];
+  nextProfile.redeemedPromoCodes = Array.isArray(nextProfile.redeemedPromoCodes)
+    ? [...new Set(nextProfile.redeemedPromoCodes.map(normalizePromoCode).filter(Boolean))].slice(0, MAX_REDEEMED_PROMO_CODES)
+    : [];
   nextProfile.level = Math.max(1, wholeChips(nextProfile.level, 1));
   nextProfile.xp = wholeChips(nextProfile.xp, 0);
   nextProfile.chips = wholeChips(nextProfile.chips, STARTING_CHIPS);
@@ -311,6 +323,27 @@ export function getCashOutAvailable(profile) {
   return Math.min(wholeChips(profile?.chips, 0), wholeChips(profile?.redeemableChips, 0));
 }
 
+export function normalizePromoCode(value) {
+  return String(value || "")
+    .trim()
+    .toUpperCase()
+    .replace(/[\s-]+/g, "");
+}
+
+export function normalizePromoBadge(badge) {
+  const id = cleanText(badge?.id, 48);
+  const title = cleanText(badge?.title, 36);
+  if (!id || !title) return null;
+
+  return {
+    id,
+    title,
+    description: cleanText(badge?.description, 120),
+    accent: cleanText(badge?.accent, 24) || "yellow",
+    awardedAt: validIsoDate(badge?.awardedAt) || new Date().toISOString(),
+  };
+}
+
 export function addLedgerEntry(profile, entry) {
   const ledgerEntry = {
     id: makeId("ledger"),
@@ -413,4 +446,20 @@ function wholeChips(value, fallback = 0) {
 
 function clampChips(value, minimum, maximum) {
   return Math.min(Math.max(wholeChips(value, minimum), minimum), maximum);
+}
+
+function cleanText(value, maxLength) {
+  return Array.from(String(value || ""))
+    .filter((character) => {
+      const code = character.charCodeAt(0);
+      return code >= 32 && code !== 127;
+    })
+    .join("")
+    .trim()
+    .slice(0, maxLength);
+}
+
+function validIsoDate(value) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "" : date.toISOString();
 }
